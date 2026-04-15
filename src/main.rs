@@ -178,7 +178,10 @@ fn main() {
             selection.head = selection.tail;
         }
 
-        if let Some(ch) = rl.get_char_pressed() {
+        if let Some(ch) = rl
+            .get_char_pressed()
+            .or_else(|| rl.is_key_pressed(KEY_ENTER).then_some('\n'))
+        {
             let mut buf = [0; 4];
             document.replace_range(selection, ch.encode_utf8(&mut buf));
             selection.tail += ch.len_utf8();
