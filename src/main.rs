@@ -71,6 +71,13 @@ pub struct Selection {
 }
 
 impl Selection {
+    pub fn start(&self) -> &usize {
+        (&self.head).min(&self.tail)
+    }
+    pub fn end(&self) -> &usize {
+        (&self.head).max(&self.tail)
+    }
+
     pub const fn len(&self) -> usize {
         self.head.abs_diff(self.tail)
     }
@@ -99,11 +106,11 @@ impl From<Selection> for Range<usize> {
 
 impl RangeBounds<usize> for Selection {
     fn start_bound(&self) -> Bound<&usize> {
-        Bound::Included((&self.head).min(&self.tail))
+        Bound::Included(self.start())
     }
 
     fn end_bound(&self) -> Bound<&usize> {
-        Bound::Excluded((&self.head).max(&self.tail))
+        Bound::Excluded(self.end())
     }
 
     #[inline]
@@ -152,11 +159,19 @@ fn main() {
         let mut is_moved = false;
         if rl.is_key_pressed(KEY_RIGHT) {
             is_moved = true;
-            selection.tail = selection.tail.saturating_add(1);
+            selection.tail = if selection.is_empty() || is_shifting {
+                selection.tail.saturating_add(1).min(document.len())
+            } else {
+                *selection.end()
+            };
         }
         if rl.is_key_pressed(KEY_LEFT) {
             is_moved = true;
-            selection.tail = selection.tail.saturating_sub(1);
+            selection.tail = if selection.is_empty() || is_shifting {
+                selection.tail.saturating_sub(1)
+            } else {
+                *selection.start()
+            };
         }
         if rl.is_key_pressed(KEY_END) {
             is_moved = true;
@@ -188,15 +203,18 @@ fn main() {
             selection.head = selection.tail;
         } else if rl.is_key_pressed(KEY_BACKSPACE) {
             if selection.is_empty() {
-                selection.tail -= 1;
+                selection.tail = selection.tail.saturating_sub(1);
             }
             document.replace_range(selection, "");
             selection.head = selection.tail;
         } else if rl.is_key_pressed(KEY_DELETE) {
             if selection.is_empty() {
-                selection.tail += 1;
+                selection.tail = selection.tail.saturating_add(1).min(document.len());
             }
-            document.replace_range(selection, "");
+            if *selection.start() < document.len() {
+                document.replace_range(selection, "");
+            }
+            selection.head = selection.head.min(document.len());
             selection.tail = selection.head;
         }
 
