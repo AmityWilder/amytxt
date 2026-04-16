@@ -158,14 +158,15 @@ pub const trait Document {
     /// This method is allowed to panic if `pos` is not bounded to 0..[`len`](`Self::len`).
     fn line_index(&self, pos: usize) -> usize;
 
-    /// Gives the position following the last space at or before `pos`.
+    /// Gives the position following the last space or newline at or before `pos`.
     fn word_start(&self, pos: usize) -> usize {
         self.start_of(pos, Self::Char::SPACE)
+            .max(self.line_start(pos))
     }
 
-    /// Gives the position of the first space at or after `pos`.
+    /// Gives the position of the first space or newline at or after `pos`.
     fn word_end(&self, pos: usize) -> usize {
-        self.end_of(pos, Self::Char::SPACE)
+        self.end_of(pos, Self::Char::SPACE).min(self.line_end(pos))
     }
 
     /// Gives the position following the last newline at or before `pos`.
@@ -691,9 +692,9 @@ impl<Doc> TextEditor<Doc> {
                     };
                 }
 
-                KeyInput::Up => todo!(),
+                KeyInput::Up => println!("todo"),
 
-                KeyInput::Down => todo!(),
+                KeyInput::Down => println!("todo"),
 
                 KeyInput::Home => {
                     self.selection.tail = if is_ctrling {
@@ -725,22 +726,39 @@ impl<Doc> TextEditor<Doc> {
 }
 
 impl TextEditor<String> {
+    /// Get an iterator over lines and their ranges within `content`
+    pub fn ranged_lines(&self) -> impl DoubleEndedIterator<Item = (Range<usize>, &str)> {
+        self.content
+            .lines()
+            .map(|line| match self.content.substr_range(line) {
+                Some(range) => (range, line),
+                None => unreachable!("all lines of `document` should be in `document`"),
+            })
+    }
+
     /// Render the editor
     pub fn draw<D, T>(&self, d: &mut D, style: &TextStyle<T>)
     where
         D: RaylibDraw + std::ops::DerefMut<Target = RaylibHandle>,
         T: RaylibFont,
     {
-        let selection_lines = self.content.line_indices(self.selection.into());
-        for (screen_linenum, (line_range, line)) in self.clipped_lines().enumerate() {
-            let document_linenum = screen_linenum - self.scroll;
+        let selection_range = Range::from(self.selection);
+        let selection_lines = self.content.line_indices(selection_range.clone());
+        for (screen_linenum, (document_linenum, (line_range, line))) in self
+            .ranged_lines()
+            .enumerate()
+            .skip(self.scroll)
+            .take(self.fittable_lines())
+            .enumerate()
+        {
+            // only highlight the line if it's within the selection
             if selection_lines.contains(&document_linenum) {
-                let selection_range = Range::from(self.selection);
                 // start of the selection clamped to the start of the line
                 // - if the start is within this line, it becomes its offset from the start of the line
                 // - if the start is before this line, it clamps to 0
                 // - if the start is after this line, we would not have reached this point
                 let inline_start = selection_range.start.saturating_sub(line_range.start);
+
                 // end of the selection clamped to the end of the line
                 // - if the end is within this line, it becomes its offset from the start of the line
                 // - if the end is before this line, we would not have reached this point
@@ -749,13 +767,18 @@ impl TextEditor<String> {
                     .end
                     .min(line_range.end)
                     .saturating_sub(line_range.start);
+
+                // number of pixels in the line before the cursor
                 let pre_width = style.text_width(&line[..inline_start]);
+
+                // number of pixels in the line that overlap the cursor
                 let selected_width = style.text_width(&line[inline_start..inline_end]);
+
                 d.draw_rectangle_rec(
                     Rectangle::new(
                         self.pad.x
                             + pre_width
-                            + if selection_range.is_empty() {
+                            + if self.selection.is_empty() {
                                 -0.5 * style.min_selection_width
                             } else {
                                 0.0
@@ -782,18 +805,6 @@ impl TextEditor<String> {
                 style.foreground_color,
             );
         }
-    }
-
-    /// Get an iterator over the lines that fit inside the content region (clip - pad) of the editor
-    pub fn clipped_lines(&self) -> impl Iterator<Item = (Range<usize>, &str)> {
-        self.content
-            .lines()
-            .skip(self.scroll)
-            .take(self.fittable_lines())
-            .map(|line| match self.content.substr_range(line) {
-                Some(range) => (range, line),
-                None => unreachable!("all lines of `document` should be in `document`"),
-            })
     }
 }
 
