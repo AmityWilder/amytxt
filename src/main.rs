@@ -139,6 +139,30 @@ impl std::ops::Index<Selection> for str {
     }
 }
 
+#[derive(Debug)]
+pub struct TextStyle<T> {
+    pub font: T,
+    pub font_size: f32,
+    pub spacing: f32,
+    pub line_space: f32,
+    pub background_color: Color,
+    pub foreground_color: Color,
+    pub selection_color: Color,
+    pub min_selection_width: f32,
+}
+
+impl<T> TextStyle<T> {
+    pub const fn line_height(&self) -> f32 {
+        self.font_size + self.line_space
+    }
+}
+
+impl<T: RaylibFont> TextStyle<T> {
+    pub fn text_width(&self, text: &str) -> f32 {
+        self.font.measure_text(text, self.font_size, self.spacing).x
+    }
+}
+
 const fn calculate_fittable_lines(clip_height: f32, pad_y: f32, line_height: f32) -> usize {
     ((clip_height - 2.0 * pad_y) / line_height) as usize
 }
@@ -293,20 +317,36 @@ impl TextEditor {
             .saturating_sub_signed(rl.get_mouse_wheel_move() as isize)
             .min(self.content.lines().count());
     }
+
+    pub fn clipped_lines(&self) -> impl Iterator<Item = (Range<usize>, &str)> {
+        self.content
+            .lines()
+            .skip(self.scroll)
+            .take(self.fittable_lines())
+            .map(|line| {
+                (
+                    self.content
+                        .substr_range(line)
+                        .expect("all lines of document should be in document"),
+                    line,
+                )
+            })
+    }
 }
 
 fn main() {
-    let font_size = 20.0;
-    let spacing = font_size / 10.0;
-    let line_space = 2.0;
-    // line_height = font_size + line_space
-    let background_color = Color::new(27, 27, 27, 255);
-    let foreground_color = Color::WHITE;
-    let selection_color = Color::BLUEVIOLET;
-    let min_selection_width = 2.0;
-
     let (mut rl, thread) = init().title("Amitxt").resizable().build();
-    let font = rl.get_font_default();
+
+    let style = TextStyle {
+        font: rl.get_font_default(),
+        font_size: 20.0,
+        spacing: 2.0,
+        line_space: 2.0,
+        background_color: Color::new(27, 27, 27, 255),
+        foreground_color: Color::WHITE,
+        selection_color: Color::BLUEVIOLET,
+        min_selection_width: 2.0,
+    };
 
     let mut document = TextEditor::new(
         Rectangle::new(
@@ -317,12 +357,12 @@ fn main() {
         ),
         Vector2::new(5.0, 5.0),
         600,
-        font_size + line_space,
+        style.line_height(),
     );
 
     while !rl.window_should_close() {
         if rl.is_window_resized() {
-            document.update_clip(font_size + line_space, |clip| {
+            document.update_clip(style.line_height(), |clip| {
                 clip.height = rl.get_screen_height() as f32
             });
         }
@@ -330,22 +370,12 @@ fn main() {
         document.update(&mut rl);
 
         let mut d = rl.begin_drawing(&thread);
-        d.clear_background(background_color);
+        d.clear_background(style.background_color);
 
         let selection_lines = document.content.line_indices(document.selection.into());
-        for (screen_linenum, line) in document
-            .content
-            .lines()
-            .skip(document.scroll)
-            .take(document.fittable_lines())
-            .enumerate()
-        {
+        for (screen_linenum, (line_range, line)) in document.clipped_lines().enumerate() {
             let document_linenum = screen_linenum - document.scroll;
             if selection_lines.contains(&document_linenum) {
-                let line_range = document
-                    .content
-                    .substr_range(line)
-                    .expect("all lines of document should be in document");
                 let selection_range = Range::from(document.selection);
                 // start of the selection clamped to the start of the line
                 // - if the start is within this line, it becomes its offset from the start of the line
@@ -360,40 +390,37 @@ fn main() {
                     .end
                     .min(line_range.end)
                     .saturating_sub(line_range.start);
-                let pre_width = font
-                    .measure_text(&line[..inline_start], font_size, spacing)
-                    .x;
-                let selected_width = font
-                    .measure_text(&line[inline_start..inline_end], font_size, spacing)
-                    .x;
+                let pre_width = style.text_width(&line[..inline_start]);
+                let selected_width = style.text_width(&line[inline_start..inline_end]);
                 d.draw_rectangle_rec(
                     Rectangle::new(
                         document.pad.x
                             + pre_width
                             + if selection_range.is_empty() {
-                                -0.5 * min_selection_width
+                                -0.5 * style.min_selection_width
                             } else {
                                 0.0
                             },
                         document.pad.y
-                            + (document_linenum - document.scroll) as f32
-                                * (font_size + line_space),
-                        (selected_width + spacing).max(min_selection_width),
-                        font_size,
+                            + (document_linenum - document.scroll) as f32 * (style.line_height()),
+                        (selected_width + style.spacing).max(style.min_selection_width),
+                        style.font_size,
                     ),
-                    selection_color,
+                    style.selection_color,
                 );
             }
 
             d.draw_text_pro(
-                &font,
+                &style.font,
                 line,
-                document.pad + Vector2::new(0.0, screen_linenum as f32 * (font_size + line_space)),
+                Vector2::new(document.clip.x, document.clip.y)
+                    + document.pad
+                    + Vector2::new(0.0, screen_linenum as f32 * (style.line_height())),
                 Vector2::zero(),
                 0.0,
-                font_size,
-                spacing,
-                foreground_color,
+                style.font_size,
+                style.spacing,
+                style.foreground_color,
             );
         }
     }
