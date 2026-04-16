@@ -4,8 +4,22 @@ use raylib::prelude::{KeyboardKey::*, *};
 use std::ops::{Bound, Range, RangeBounds, RangeInclusive};
 
 trait Document {
-    fn line_start(&self, pos: usize) -> usize;
-    fn line_end(&self, pos: usize) -> usize;
+    fn start_of(&self, pos: usize, delim: char) -> usize;
+    fn end_of(&self, pos: usize, delim: char) -> usize;
+
+    fn word_start(&self, pos: usize) -> usize {
+        self.start_of(pos, ' ')
+    }
+    fn word_end(&self, pos: usize) -> usize {
+        self.end_of(pos, ' ')
+    }
+
+    fn line_start(&self, pos: usize) -> usize {
+        self.start_of(pos, '\n')
+    }
+    fn line_end(&self, pos: usize) -> usize {
+        self.end_of(pos, '\n')
+    }
     fn line_index(&self, pos: usize) -> usize;
 
     fn line_range(&self, range: Range<usize>) -> Range<usize> {
@@ -18,49 +32,22 @@ trait Document {
 }
 
 impl Document for str {
-    fn line_start(&self, pos: usize) -> usize {
+    fn start_of(&self, pos: usize, delim: char) -> usize {
         self[..pos.min(self.len())]
-            .rfind('\n')
-            .map(|i| i + '\n'.len_utf8())
+            .rfind(delim)
+            .map(|i| i + delim.len_utf8())
             .unwrap_or(0)
     }
 
-    fn line_end(&self, pos: usize) -> usize {
+    fn end_of(&self, pos: usize, delim: char) -> usize {
         self[pos.min(self.len())..]
-            .find('\n')
+            .find(delim)
             .map(|i| i + pos)
             .unwrap_or(self.len())
     }
 
     fn line_index(&self, pos: usize) -> usize {
         self[..pos.min(self.len())].matches('\n').count()
-    }
-}
-
-impl<T: ?Sized + Document> Document for &T {
-    #[inline]
-    fn line_start(&self, pos: usize) -> usize {
-        (*self).line_start(pos)
-    }
-
-    #[inline]
-    fn line_end(&self, pos: usize) -> usize {
-        (*self).line_end(pos)
-    }
-
-    #[inline]
-    fn line_index(&self, pos: usize) -> usize {
-        (*self).line_index(pos)
-    }
-
-    #[inline]
-    fn line_range(&self, range: Range<usize>) -> Range<usize> {
-        (*self).line_range(range)
-    }
-
-    #[inline]
-    fn line_indices(&self, range: Range<usize>) -> RangeInclusive<usize> {
-        (*self).line_indices(range)
     }
 }
 
@@ -133,7 +120,7 @@ impl std::ops::Index<Selection> for str {
 }
 
 fn main() {
-    let mut document = String::from("hello world");
+    let mut document = String::new();
     let mut selection = Selection { head: 0, tail: 0 };
     let font_size = 20.0;
     let spacing = font_size / 10.0;
@@ -144,6 +131,7 @@ fn main() {
     let selection_color = Color::BLUEVIOLET;
     let min_selection_width = 2.0;
     let mut scroll: usize = 0;
+    let wrap_width = 600;
 
     let (mut rl, thread) = init().title("Amitxt").resizable().build();
     let font = rl.get_font_default();
@@ -160,7 +148,11 @@ fn main() {
         if rl.is_key_pressed(KEY_RIGHT) {
             is_moved = true;
             selection.tail = if selection.is_empty() || is_shifting {
-                selection.tail.saturating_add(1).min(document.len())
+                if is_ctrling {
+                    document.word_end(selection.tail.saturating_add(1).min(document.len()))
+                } else {
+                    selection.tail.saturating_add(1).min(document.len())
+                }
             } else {
                 *selection.end()
             };
@@ -168,7 +160,11 @@ fn main() {
         if rl.is_key_pressed(KEY_LEFT) {
             is_moved = true;
             selection.tail = if selection.is_empty() || is_shifting {
-                selection.tail.saturating_sub(1)
+                if is_ctrling {
+                    document.word_start(selection.tail.saturating_sub(1))
+                } else {
+                    selection.tail.saturating_sub(1)
+                }
             } else {
                 *selection.start()
             };
