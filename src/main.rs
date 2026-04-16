@@ -1,9 +1,37 @@
-#![feature(substr_range, cmp_minmax)]
+#![feature(
+    substr_range,
+    cmp_minmax,
+    const_iter,
+    const_array,
+    const_bool,
+    const_cmp,
+    const_clone,
+    const_block_items,
+    const_convert,
+    const_default,
+    const_for,
+    const_index,
+    const_closures,
+    const_control_flow,
+    const_format_args,
+    const_ops,
+    const_range,
+    const_option_ops,
+    const_destruct,
+    const_path_separators,
+    const_range_bounds,
+    const_trait_impl,
+    const_result_unwrap_unchecked,
+    derive_const,
+    const_slice_make_iter,
+    min_specialization
+)]
+#![warn(clippy::missing_const_for_fn)]
 
 use raylib::prelude::{KeyboardKey::*, MouseButton::*, *};
 use std::ops::{Bound, Index, IndexMut, Range, RangeBounds, RangeInclusive};
 
-trait Document: Index<Range<usize>> + IndexMut<Range<usize>> {
+pub const trait Document {
     /// The range of values that are safe to index into
     fn full_range(&self) -> Range<usize>;
 
@@ -71,17 +99,18 @@ impl Document for str {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Copy, Hash)]
+#[derive_const(Clone, PartialEq, Eq, Default)]
 pub struct Selection {
     pub head: usize,
     pub tail: usize,
 }
 
 impl Selection {
-    pub fn start(&self) -> &usize {
+    pub const fn start(&self) -> &usize {
         (&self.head).min(&self.tail)
     }
-    pub fn end(&self) -> &usize {
+    pub const fn end(&self) -> &usize {
         (&self.head).max(&self.tail)
     }
 
@@ -94,7 +123,7 @@ impl Selection {
     }
 }
 
-impl IntoIterator for Selection {
+impl const IntoIterator for Selection {
     type Item = usize;
     type IntoIter = Range<usize>;
 
@@ -104,14 +133,14 @@ impl IntoIterator for Selection {
     }
 }
 
-impl From<Selection> for Range<usize> {
+impl const From<Selection> for Range<usize> {
     fn from(value: Selection) -> Self {
         let [start, end] = std::cmp::minmax(value.head, value.tail);
         start..end
     }
 }
 
-impl RangeBounds<usize> for Selection {
+impl const RangeBounds<usize> for Selection {
     fn start_bound(&self) -> Bound<&usize> {
         Bound::Included(self.start())
     }
@@ -123,14 +152,14 @@ impl RangeBounds<usize> for Selection {
     #[inline]
     fn contains<U>(&self, item: &U) -> bool
     where
-        usize: PartialOrd<U>,
-        U: ?Sized + PartialOrd<usize>,
+        usize: [const] PartialOrd<U>,
+        U: ?Sized + [const] PartialOrd<usize>,
     {
         Range::from(*self).contains(item)
     }
 }
 
-impl std::ops::Index<Selection> for str {
+impl const std::ops::Index<Selection> for str {
     type Output = str;
 
     #[inline]
@@ -151,6 +180,24 @@ pub struct TextStyle<T> {
     pub min_selection_width: f32,
 }
 
+impl<T> const Default for TextStyle<T>
+where
+    T: [const] Default,
+{
+    fn default() -> Self {
+        Self {
+            font: Default::default(),
+            font_size: Default::default(),
+            spacing: Default::default(),
+            line_space: Default::default(),
+            background_color: Color::BLANK,
+            foreground_color: Color::BLANK,
+            selection_color: Color::BLANK,
+            min_selection_width: Default::default(),
+        }
+    }
+}
+
 impl<T> TextStyle<T> {
     pub const fn line_height(&self) -> f32 {
         self.font_size + self.line_space
@@ -167,7 +214,40 @@ const fn calculate_fittable_lines(clip_height: f32, pad_y: f32, line_height: f32
     ((clip_height - 2.0 * pad_y) / line_height) as usize
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Copy, Hash)]
+#[derive_const(Clone, PartialEq, Eq)]
+pub enum KeyInput {
+    Char(char),
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+}
+
+impl KeyInput {
+    pub fn check_pressed(rl: &mut RaylibHandle) -> [Option<Self>; 9] {
+        [
+            rl.get_char_pressed()
+                .or_else(|| rl.is_key_pressed(KEY_ENTER).then_some('\n'))
+                .map(KeyInput::Char),
+            rl.is_key_pressed(KEY_LEFT).then_some(KeyInput::Left),
+            rl.is_key_pressed(KEY_RIGHT).then_some(KeyInput::Right),
+            rl.is_key_pressed(KEY_UP).then_some(KeyInput::Up),
+            rl.is_key_pressed(KEY_DOWN).then_some(KeyInput::Down),
+            rl.is_key_pressed(KEY_DELETE).then_some(KeyInput::Delete),
+            rl.is_key_pressed(KEY_BACKSPACE)
+                .then_some(KeyInput::Backspace),
+            rl.is_key_pressed(KEY_HOME).then_some(KeyInput::Home),
+            rl.is_key_pressed(KEY_END).then_some(KeyInput::End),
+        ]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextEditor {
     pub content: String,
     pub scroll: usize,
@@ -176,6 +256,20 @@ pub struct TextEditor {
     pad: Vector2,
     fittable_lines: usize,
     pub wrap: u32,
+}
+
+impl const Default for TextEditor {
+    fn default() -> Self {
+        Self {
+            content: Default::default(),
+            scroll: Default::default(),
+            selection: Default::default(),
+            clip: Rectangle::new(0.0, 0.0, 0.0, 0.0),
+            pad: Vector2::zero(),
+            fittable_lines: Default::default(),
+            wrap: Default::default(),
+        }
+    }
 }
 
 impl TextEditor {
@@ -223,93 +317,104 @@ impl TextEditor {
         self.fittable_lines = self.calculate_fittable_lines(line_height);
     }
 
-    pub fn update(&mut self, rl: &mut RaylibHandle) {
+    pub fn update<I>(&mut self, rl: &mut RaylibHandle, inputs: I)
+    where
+        I: IntoIterator<Item = KeyInput>,
+    {
         let is_shifting = rl.is_key_down(KEY_LEFT_SHIFT) || rl.is_key_down(KEY_RIGHT_SHIFT);
         let is_ctrling = rl.is_key_down(KEY_LEFT_CONTROL) || rl.is_key_down(KEY_RIGHT_CONTROL);
         let is_alting = rl.is_key_down(KEY_LEFT_ALT) || rl.is_key_down(KEY_RIGHT_ALT);
 
-        let mut is_moved = false;
-        if rl.is_key_pressed(KEY_RIGHT) {
-            is_moved = true;
-            self.selection.tail = if self.selection.is_empty() || is_shifting {
-                if is_ctrling {
-                    self.content.word_end(
-                        self.selection
+        for input in inputs {
+            match input {
+                KeyInput::Char(ch) => {
+                    let mut buf = [0; 4];
+                    self.content
+                        .replace_range(self.selection, ch.encode_utf8(&mut buf));
+                    self.selection.tail += ch.len_utf8();
+                    self.selection.head = self.selection.tail;
+                }
+
+                KeyInput::Backspace => {
+                    if self.selection.is_empty() {
+                        self.selection.tail = self.selection.tail.saturating_sub(1);
+                    }
+                    self.content.replace_range(self.selection, "");
+                    self.selection.head = self.selection.tail;
+                }
+
+                KeyInput::Delete => {
+                    if self.selection.is_empty() {
+                        self.selection.tail = self
+                            .selection
                             .tail
                             .saturating_add(1)
-                            .min(self.content.len()),
-                    )
-                } else {
-                    self.selection
-                        .tail
-                        .saturating_add(1)
-                        .min(self.content.len())
+                            .min(self.content.len());
+                    }
+                    if *self.selection.start() < self.content.len() {
+                        self.content.replace_range(self.selection, "");
+                    }
+                    self.selection.head = self.selection.head.min(self.content.len());
+                    self.selection.tail = self.selection.head;
                 }
-            } else {
-                *self.selection.end()
-            };
-        }
-        if rl.is_key_pressed(KEY_LEFT) {
-            is_moved = true;
-            self.selection.tail = if self.selection.is_empty() || is_shifting {
-                if is_ctrling {
-                    self.content
-                        .word_start(self.selection.tail.saturating_sub(1))
-                } else {
-                    self.selection.tail.saturating_sub(1)
-                }
-            } else {
-                *self.selection.start()
-            };
-        }
-        if rl.is_key_pressed(KEY_END) {
-            is_moved = true;
-            self.selection.tail = if is_ctrling {
-                self.content.len()
-            } else {
-                self.content.line_end(self.selection.tail)
-            };
-        }
-        if rl.is_key_pressed(KEY_HOME) {
-            is_moved = true;
-            self.selection.tail = if is_ctrling {
-                0
-            } else {
-                self.content.line_start(self.selection.tail)
-            };
-        }
-        if is_moved && !is_shifting {
-            self.selection.head = self.selection.tail;
-        }
 
-        if let Some(ch) = rl
-            .get_char_pressed()
-            .or_else(|| rl.is_key_pressed(KEY_ENTER).then_some('\n'))
-        {
-            let mut buf = [0; 4];
-            self.content
-                .replace_range(self.selection, ch.encode_utf8(&mut buf));
-            self.selection.tail += ch.len_utf8();
-            self.selection.head = self.selection.tail;
-        } else if rl.is_key_pressed(KEY_BACKSPACE) {
-            if self.selection.is_empty() {
-                self.selection.tail = self.selection.tail.saturating_sub(1);
+                KeyInput::Left => {
+                    self.selection.tail = if self.selection.is_empty() || is_shifting {
+                        if is_ctrling {
+                            self.content
+                                .word_start(self.selection.tail.saturating_sub(1))
+                        } else {
+                            self.selection.tail.saturating_sub(1)
+                        }
+                    } else {
+                        *self.selection.start()
+                    };
+                }
+
+                KeyInput::Right => {
+                    self.selection.tail = if self.selection.is_empty() || is_shifting {
+                        if is_ctrling {
+                            self.content.word_end(
+                                self.selection
+                                    .tail
+                                    .saturating_add(1)
+                                    .min(self.content.len()),
+                            )
+                        } else {
+                            self.selection
+                                .tail
+                                .saturating_add(1)
+                                .min(self.content.len())
+                        }
+                    } else {
+                        *self.selection.end()
+                    };
+                }
+
+                KeyInput::Up => todo!(),
+
+                KeyInput::Down => todo!(),
+
+                KeyInput::Home => {
+                    self.selection.tail = if is_ctrling {
+                        0
+                    } else {
+                        self.content.line_start(self.selection.tail)
+                    };
+                }
+
+                KeyInput::End => {
+                    self.selection.tail = if is_ctrling {
+                        self.content.len()
+                    } else {
+                        self.content.line_end(self.selection.tail)
+                    };
+                }
             }
-            self.content.replace_range(self.selection, "");
-            self.selection.head = self.selection.tail;
-        } else if rl.is_key_pressed(KEY_DELETE) {
-            if self.selection.is_empty() {
-                self.selection.tail = self
-                    .selection
-                    .tail
-                    .saturating_add(1)
-                    .min(self.content.len());
+
+            if !is_shifting {
+                self.selection.head = self.selection.tail;
             }
-            if *self.selection.start() < self.content.len() {
-                self.content.replace_range(self.selection, "");
-            }
-            self.selection.head = self.selection.head.min(self.content.len());
-            self.selection.tail = self.selection.head;
         }
 
         self.scroll = self
@@ -331,6 +436,64 @@ impl TextEditor {
                     line,
                 )
             })
+    }
+
+    pub fn draw<D, T>(&self, d: &mut D, style: &TextStyle<T>)
+    where
+        D: RaylibDraw + std::ops::DerefMut<Target = RaylibHandle>,
+        T: RaylibFont,
+    {
+        let selection_lines = self.content.line_indices(self.selection.into());
+        for (screen_linenum, (line_range, line)) in self.clipped_lines().enumerate() {
+            let document_linenum = screen_linenum - self.scroll;
+            if selection_lines.contains(&document_linenum) {
+                let selection_range = Range::from(self.selection);
+                // start of the selection clamped to the start of the line
+                // - if the start is within this line, it becomes its offset from the start of the line
+                // - if the start is before this line, it clamps to 0
+                // - if the start is after this line, we would not have reached this point
+                let inline_start = selection_range.start.saturating_sub(line_range.start);
+                // end of the selection clamped to the end of the line
+                // - if the end is within this line, it becomes its offset from the start of the line
+                // - if the end is before this line, we would not have reached this point
+                // - if the end is after this line, it clamps to the length of the line
+                let inline_end = selection_range
+                    .end
+                    .min(line_range.end)
+                    .saturating_sub(line_range.start);
+                let pre_width = style.text_width(&line[..inline_start]);
+                let selected_width = style.text_width(&line[inline_start..inline_end]);
+                d.draw_rectangle_rec(
+                    Rectangle::new(
+                        self.pad.x
+                            + pre_width
+                            + if selection_range.is_empty() {
+                                -0.5 * style.min_selection_width
+                            } else {
+                                0.0
+                            },
+                        self.pad.y
+                            + (document_linenum - self.scroll) as f32 * (style.line_height()),
+                        (selected_width + style.spacing).max(style.min_selection_width),
+                        style.font_size,
+                    ),
+                    style.selection_color,
+                );
+            }
+
+            d.draw_text_pro(
+                &style.font,
+                line,
+                Vector2::new(self.clip.x, self.clip.y)
+                    + self.pad
+                    + Vector2::new(0.0, screen_linenum as f32 * (style.line_height())),
+                Vector2::zero(),
+                0.0,
+                style.font_size,
+                style.spacing,
+                style.foreground_color,
+            );
+        }
     }
 }
 
@@ -367,61 +530,15 @@ fn main() {
             });
         }
 
-        document.update(&mut rl);
+        let input_buffer: Vec<KeyInput> = KeyInput::check_pressed(&mut rl)
+            .into_iter()
+            .flatten()
+            .collect();
+        document.update(&mut rl, input_buffer);
 
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(style.background_color);
 
-        let selection_lines = document.content.line_indices(document.selection.into());
-        for (screen_linenum, (line_range, line)) in document.clipped_lines().enumerate() {
-            let document_linenum = screen_linenum - document.scroll;
-            if selection_lines.contains(&document_linenum) {
-                let selection_range = Range::from(document.selection);
-                // start of the selection clamped to the start of the line
-                // - if the start is within this line, it becomes its offset from the start of the line
-                // - if the start is before this line, it clamps to 0
-                // - if the start is after this line, we would not have reached this point
-                let inline_start = selection_range.start.saturating_sub(line_range.start);
-                // end of the selection clamped to the end of the line
-                // - if the end is within this line, it becomes its offset from the start of the line
-                // - if the end is before this line, we would not have reached this point
-                // - if the end is after this line, it clamps to the length of the line
-                let inline_end = selection_range
-                    .end
-                    .min(line_range.end)
-                    .saturating_sub(line_range.start);
-                let pre_width = style.text_width(&line[..inline_start]);
-                let selected_width = style.text_width(&line[inline_start..inline_end]);
-                d.draw_rectangle_rec(
-                    Rectangle::new(
-                        document.pad.x
-                            + pre_width
-                            + if selection_range.is_empty() {
-                                -0.5 * style.min_selection_width
-                            } else {
-                                0.0
-                            },
-                        document.pad.y
-                            + (document_linenum - document.scroll) as f32 * (style.line_height()),
-                        (selected_width + style.spacing).max(style.min_selection_width),
-                        style.font_size,
-                    ),
-                    style.selection_color,
-                );
-            }
-
-            d.draw_text_pro(
-                &style.font,
-                line,
-                Vector2::new(document.clip.x, document.clip.y)
-                    + document.pad
-                    + Vector2::new(0.0, screen_linenum as f32 * (style.line_height())),
-                Vector2::zero(),
-                0.0,
-                style.font_size,
-                style.spacing,
-                style.foreground_color,
-            );
-        }
+        document.draw(&mut d, &style);
     }
 }
