@@ -1,67 +1,181 @@
+//! Notepad without AI
+
 #![feature(
     substr_range,
     cmp_minmax,
     const_iter,
-    const_array,
+    // const_array,
     const_bool,
     const_cmp,
     const_clone,
-    const_block_items,
+    // const_block_items,
     const_convert,
     const_default,
-    const_for,
+    // const_for,
     const_index,
-    const_closures,
-    const_control_flow,
+    // const_closures,
+    // const_control_flow,
     const_format_args,
-    const_ops,
+    // const_ops,
     const_range,
-    const_option_ops,
-    const_destruct,
-    const_path_separators,
-    const_range_bounds,
+    // const_option_ops,
+    // const_destruct,
+    // const_path_separators,
+    // const_range_bounds,
     const_trait_impl,
-    const_result_unwrap_unchecked,
+    // const_result_unwrap_unchecked,
     derive_const,
-    const_slice_make_iter,
+    // const_slice_make_iter,
     min_specialization
 )]
-#![warn(clippy::missing_const_for_fn)]
+#![warn(
+    clippy::missing_const_for_fn,
+    missing_docs,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::unnecessary_safety_comment,
+    clippy::unnecessary_safety_doc,
+    clippy::missing_safety_doc,
+    clippy::undocumented_unsafe_blocks,
+    clippy::missing_panics_doc,
+    clippy::missing_docs_in_private_items
+)]
 
-use raylib::prelude::{KeyboardKey::*, MouseButton::*, *};
-use std::ops::{Bound, Index, IndexMut, Range, RangeBounds, RangeInclusive};
+use raylib::prelude::{KeyboardKey::*, *};
+use std::ops::*;
 
+/// Types that can be treated as characters in text
+pub const trait Character: Sized + Copy + [const] Ord {
+    /// This type's equivalent of `' '`
+    const SPACE: Self;
+
+    /// This type's equivalent of `'\n'`
+    const NEWLINE: Self;
+
+    /// The maximum buffer size needed to encode any character
+    const MAX_SIZE: usize;
+
+    /// The number of bytes needed to encode the character
+    #[inline]
+    fn size(self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl const Character for char {
+    const SPACE: Self = ' ';
+    const NEWLINE: Self = '\n';
+    const MAX_SIZE: usize = char::MAX_LEN_UTF8;
+
+    #[inline]
+    fn size(self) -> usize {
+        self.len_utf8()
+    }
+}
+impl const Character for u8 {
+    const SPACE: Self = b' ';
+    const NEWLINE: Self = b'\n';
+    const MAX_SIZE: usize = std::mem::size_of::<Self>();
+}
+impl const Character for std::ffi::c_char {
+    const SPACE: Self = b' ' as Self;
+    const NEWLINE: Self = b'\n' as Self;
+    const MAX_SIZE: usize = std::mem::size_of::<Self>();
+}
+
+/// A subset of an array
+///
+/// Does not need to be [`Sized`], because [`Index`] will always return a reference to it
+pub const trait Slice<'a>: 'a + [const] Index<Range<usize>, Output = Self> {
+    /// An empty slice, allowing [`EditableDocument`] to use it for erasing
+    fn empty() -> &'a Self;
+}
+impl<'a> const Slice<'a> for str {
+    fn empty() -> &'a Self {
+        Default::default()
+    }
+}
+impl<'a, T: 'a> const Slice<'a> for [T] {
+    fn empty() -> &'a Self {
+        Default::default()
+    }
+}
+
+/// Any form of text that can be selected and edited like a Word document
 pub const trait Document {
+    /// The character type for the implementation
+    type Char: [const] Character;
+
+    /// The type given by indexing the document.
+    ///
+    /// While a document may output slices of a different type from itself (e.g. String -> str),
+    /// the slice should always output its own type (str -> str).
+    type Slice<'a>: ?Sized + [const] Slice<'a> + [const] Document<Slice<'a> = Self::Slice<'a>>;
+
+    /// An iterator over lines of text in a document
+    type Lines<'a>: Iterator<Item = &'a Self::Slice<'a>>
+    where
+        Self: 'a;
+
+    /// Convert a [`Char`] into a [`Slice`] for the purpose of insertion through [`replace_range`]
+    ///
+    /// [`Char`]: Self::Char
+    /// [`Slice`]: Self::Slice
+    /// [`replace_range`]: EditableDocument::replace_range
+    fn char_to_slice(ch: Self::Char, buf: &mut [u8]) -> &mut Self::Slice<'_>;
+
     /// The range of values that are safe to index into
-    fn full_range(&self) -> Range<usize>;
+    fn len(&self) -> usize;
+
+    /// Whether the document or slice contains no elements
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns an iterator over lines of text in the document
+    fn lines(&self) -> Self::Lines<'_>;
+
+    /// Returns the number of lines in the document
+    fn line_count(&self) -> usize;
+
+    /// Gives a [`Self::Slice`] covering the entire document, which can then be range-indexed
+    fn as_slice(&self) -> &Self::Slice<'_>;
 
     /// Gives the position following the last instance of `delim` at or before `pos`.
-    fn start_of(&self, pos: usize, delim: char) -> usize;
+    ///
+    /// # Panics
+    /// This method is allowed to panic if `pos` is not bounded to 0..[`len`](`Self::len`).
+    fn start_of(&self, pos: usize, delim: Self::Char) -> usize;
 
     /// Gives the position of the first instance of `delim` at or after `pos`.
-    fn end_of(&self, pos: usize, delim: char) -> usize;
+    ///
+    /// # Panics
+    /// This method is allowed to panic if `pos` is not bounded to 0..[`len`](`Self::len`).
+    fn end_of(&self, pos: usize, delim: Self::Char) -> usize;
 
     /// Counts the number of newlines before `pos`.
+    ///
+    /// # Panics
+    /// This method is allowed to panic if `pos` is not bounded to 0..[`len`](`Self::len`).
     fn line_index(&self, pos: usize) -> usize;
 
     /// Gives the position following the last space at or before `pos`.
     fn word_start(&self, pos: usize) -> usize {
-        self.start_of(pos, ' ')
+        self.start_of(pos, Self::Char::SPACE)
     }
 
     /// Gives the position of the first space at or after `pos`.
     fn word_end(&self, pos: usize) -> usize {
-        self.end_of(pos, ' ')
+        self.end_of(pos, Self::Char::SPACE)
     }
 
     /// Gives the position following the last newline at or before `pos`.
     fn line_start(&self, pos: usize) -> usize {
-        self.start_of(pos, '\n')
+        self.start_of(pos, Self::Char::NEWLINE)
     }
 
     /// Gives the position of the first newline at or after `pos`.
     fn line_end(&self, pos: usize) -> usize {
-        self.end_of(pos, '\n')
+        self.end_of(pos, Self::Char::NEWLINE)
     }
 
     /// Snaps `range` to the tightest line boundaries that fully contain it.
@@ -76,48 +190,175 @@ pub const trait Document {
 }
 
 impl Document for str {
-    fn full_range(&self) -> Range<usize> {
-        0..self.len()
+    type Char = char;
+    type Slice<'a> = str;
+    type Lines<'a>
+        = std::str::Lines<'a>
+    where
+        Self: 'a;
+
+    #[inline]
+    fn char_to_slice(ch: char, buf: &mut [u8]) -> &mut str {
+        ch.encode_utf8(buf)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    #[inline]
+    fn lines(&self) -> Self::Lines<'_> {
+        self.lines()
+    }
+
+    #[inline]
+    fn line_count(&self) -> usize {
+        self.lines().count()
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &Self::Slice<'_> {
+        self
     }
 
     fn start_of(&self, pos: usize, delim: char) -> usize {
-        self[..pos.min(self.len())]
-            .rfind(delim)
-            .map(|i| i + delim.len_utf8())
-            .unwrap_or(0)
+        assert!(pos <= self.len(), "pos should be in bounds");
+        match self[..pos].rfind(delim) {
+            Some(i) => i + delim.len_utf8(),
+            None => 0,
+        }
     }
 
     fn end_of(&self, pos: usize, delim: char) -> usize {
-        self[pos.min(self.len())..]
-            .find(delim)
-            .map(|i| i + pos)
-            .unwrap_or(self.len())
+        assert!(pos <= self.len(), "pos should be in bounds");
+        match self[pos..].find(delim) {
+            Some(i) => i + pos,
+            None => self.len(),
+        }
     }
 
     fn line_index(&self, pos: usize) -> usize {
-        self[..pos.min(self.len())].matches('\n').count()
+        assert!(pos <= self.len(), "pos should be in bounds");
+        self[..pos].matches('\n').count()
     }
 }
 
+impl<T, U: ?Sized> const Document for T
+where
+    T: [const] Deref<Target = U>,
+    for<'a> U: [const] Slice<'a, Output = U> + [const] Document<Slice<'a> = U>,
+{
+    type Char = U::Char;
+    type Slice<'a> = U::Slice<'a>;
+    type Lines<'a>
+        = U::Lines<'a>
+    where
+        Self: 'a;
+
+    #[inline]
+    fn char_to_slice(ch: Self::Char, buf: &mut [u8]) -> &mut Self::Slice<'_> {
+        U::char_to_slice(ch, buf)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.deref().len()
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &Self::Slice<'_> {
+        self.deref().as_slice()
+    }
+
+    #[inline]
+    fn lines(&self) -> Self::Lines<'_> {
+        self.deref().lines()
+    }
+
+    #[inline]
+    fn line_count(&self) -> usize {
+        self.deref().line_count()
+    }
+
+    #[inline]
+    fn start_of(&self, pos: usize, delim: Self::Char) -> usize {
+        self.deref().start_of(pos, delim)
+    }
+
+    #[inline]
+    fn end_of(&self, pos: usize, delim: Self::Char) -> usize {
+        self.deref().end_of(pos, delim)
+    }
+
+    #[inline]
+    fn line_index(&self, pos: usize) -> usize {
+        self.deref().line_index(pos)
+    }
+}
+
+/// A [`Document`] that can be appended
+pub const trait EditableDocument: [const] Document {
+    /// Replace a slice of a document with another slice of possibly different size
+    ///
+    /// Replacing a non-empty range with an empty slice erases the range
+    ///
+    /// Replacing an empty range with a non-empty slice inserts the range
+    fn replace_range<R>(&mut self, range: R, replace_with: &Self::Slice<'_>)
+    where
+        R: [const] RangeBounds<usize>;
+
+    /// Equivalent to replacing the range with an empty slice
+    fn erase_range<R>(&mut self, range: R)
+    where
+        R: [const] RangeBounds<usize>,
+    {
+        self.replace_range(range, Self::Slice::empty());
+    }
+}
+
+impl EditableDocument for String {
+    #[inline]
+    fn replace_range<R>(&mut self, range: R, replace_with: &Self::Slice<'_>)
+    where
+        R: RangeBounds<usize>,
+    {
+        self.replace_range(range, replace_with);
+    }
+}
+
+/// The range of bytes selected by the cursor
 #[derive(Debug, Copy, Hash)]
 #[derive_const(Clone, PartialEq, Eq, Default)]
 pub struct Selection {
+    /// Where the selection was initially placed
     pub head: usize,
+    /// The part of the selection that moves with the arrow keys
     pub tail: usize,
 }
 
 impl Selection {
+    /// The front side of the range
     pub const fn start(&self) -> &usize {
         (&self.head).min(&self.tail)
     }
+
+    /// The back side of the range
     pub const fn end(&self) -> &usize {
         (&self.head).max(&self.tail)
     }
 
+    /// The number of bytes selected
     pub const fn len(&self) -> usize {
         self.head.abs_diff(self.tail)
     }
 
+    /// Whether the selection is for insertion, rather than replacement
     pub const fn is_empty(&self) -> bool {
         self.head == self.tail
     }
@@ -168,15 +409,24 @@ impl const std::ops::Index<Selection> for str {
     }
 }
 
+/// Parameters for measuring and displaying text
 #[derive(Debug)]
 pub struct TextStyle<T> {
+    /// The [`RaylibFont`] font the text is rendered in
     pub font: T,
+    /// The height of a character in pixels
     pub font_size: f32,
+    /// The number of pixels horizontally separating characters
     pub spacing: f32,
+    /// The number of pixels vertically separating lines of text
     pub line_space: f32,
+    /// The color of the "paper"
     pub background_color: Color,
+    /// The color of the text
     pub foreground_color: Color,
+    /// The color of the cursor/selection highlight
     pub selection_color: Color,
+    /// The width of the cursor when [`Selection::is_empty`] is true
     pub min_selection_width: f32,
 }
 
@@ -199,36 +449,55 @@ where
 }
 
 impl<T> TextStyle<T> {
+    /// The distance between the top of the current line and the top of the next line
     pub const fn line_height(&self) -> f32 {
         self.font_size + self.line_space
     }
 }
 
 impl<T: RaylibFont> TextStyle<T> {
+    /// The width, in pixels, of `text` using the `self` style
     pub fn text_width(&self, text: &str) -> f32 {
         self.font.measure_text(text, self.font_size, self.spacing).x
     }
 }
 
-const fn calculate_fittable_lines(clip_height: f32, pad_y: f32, line_height: f32) -> usize {
-    ((clip_height - 2.0 * pad_y) / line_height) as usize
+/// The number of lines of text that can fit into the content region a rectangle
+/// that is `clip_height` pixels tall with `pad_y` pixels of padding
+///
+/// Assumes the padding is the same on the bottom as it is on the top
+const fn fittable_lines(clip_height: f32, pad_y: f32, font_size: f32, line_space: f32) -> usize {
+    // because the line space is blank, we can fit one extra outside of the clipping region
+    ((clip_height - 2.0 * pad_y + line_space) / (font_size + line_space)) as usize
 }
 
+/// A [`KeyboardKey`] that performs an action when pressed
+/// (rather than modifying another while held)
 #[derive(Debug, Copy, Hash)]
 #[derive_const(Clone, PartialEq, Eq)]
-pub enum KeyInput {
-    Char(char),
+pub enum KeyInput<Ch = char> {
+    /// A character being typed (includes enter/return as `'\n'`)
+    Char(Ch),
+    /// Erase the character before the cursor (or all characters selected)
     Backspace,
+    /// Erase the character after the cursor (or all characters selected)
     Delete,
+    /// Move the cursor to the backward (by either a character or a word)
     Left,
+    /// Move the cursor to the forward (by either a character or a word)
     Right,
+    /// Move the cursor to the previous line
     Up,
+    /// Move the cursor to the next line
     Down,
+    /// Move the cursor to the beginning (of either the document or the line)
     Home,
+    /// Move the cursor to the end (of either the document or the line)
     End,
 }
 
 impl KeyInput {
+    /// Get an array of the statuses of every possible key input since the last tick
     pub fn check_pressed(rl: &mut RaylibHandle) -> [Option<Self>; 9] {
         [
             rl.get_char_pressed()
@@ -247,18 +516,30 @@ impl KeyInput {
     }
 }
 
+/// A container for editable text
 #[derive(Debug, Clone, PartialEq)]
-pub struct TextEditor {
-    pub content: String,
+pub struct TextEditor<Doc> {
+    /// The text content of the document
+    pub content: Doc,
+    /// How many lines to offset
     pub scroll: usize,
+    /// The current selection within the document
     pub selection: Selection,
+    /// The rectangle that determines how much of the document is displayed
+    ///
+    /// This is also the region covered by the background color
     clip: Rectangle,
+    /// How far inward from the edges of `clip` the content is squeezed
     pad: Vector2,
+    /// Cache how many lines can be rendered within the `clip` rectangle
+    /// (TODO: isn't this is dependent on [`TextStyle`]?)
     fittable_lines: usize,
+    /// How many pixels wide a line can get before wrapping
+    /// (TODO: doesn't this affect how many lines there are?)
     pub wrap: u32,
 }
 
-impl const Default for TextEditor {
+impl<Doc: [const] Default> const Default for TextEditor<Doc> {
     fn default() -> Self {
         Self {
             content: Default::default(),
@@ -272,66 +553,83 @@ impl const Default for TextEditor {
     }
 }
 
-impl TextEditor {
-    pub const fn new(clip: Rectangle, pad: Vector2, wrap: u32, line_height: f32) -> Self {
+impl<Doc> TextEditor<Doc> {
+    /// Construct a new [`TextEditor`] with a blank document
+    pub const fn new(
+        clip: Rectangle,
+        pad: Vector2,
+        wrap: u32,
+        font_size: f32,
+        line_space: f32,
+    ) -> Self
+    where
+        Doc: [const] Default,
+    {
         Self {
-            content: String::new(),
+            content: Doc::default(),
             scroll: 0,
             selection: Selection { head: 0, tail: 0 },
             clip,
             pad,
-            fittable_lines: calculate_fittable_lines(clip.height, pad.y, line_height),
+            fittable_lines: fittable_lines(clip.height, pad.y, font_size, line_space),
             wrap,
         }
     }
 
-    const fn calculate_fittable_lines(&self, line_height: f32) -> usize {
-        calculate_fittable_lines(self.clip.height, self.pad.y, line_height)
+    /// Call [`fittable_lines`] given this editor's parameters
+    const fn calculate_fittable_lines(&self, font_size: f32, line_space: f32) -> usize {
+        fittable_lines(self.clip.height, self.pad.y, font_size, line_space)
     }
 
+    /// Access the cached copy of the most recently calculated number of lines that can fit in the [`Self::clip`] rectangle
     pub const fn fittable_lines(&self) -> usize {
         self.fittable_lines
     }
 
+    /// Access the clip region of the editor
     pub const fn clip(&self) -> &Rectangle {
         &self.clip
     }
 
+    /// Access the padding of the editor
     pub const fn pad(&self) -> &Vector2 {
         &self.pad
     }
 
-    pub fn update_clip<F>(&mut self, line_height: f32, f: F)
+    /// Mutate the clip region of the editor and recalculate [`Self::fittable_lines`]
+    pub fn update_clip<F>(&mut self, font_size: f32, line_space: f32, f: F)
     where
         F: FnOnce(&mut Rectangle),
     {
         f(&mut self.clip);
-        self.fittable_lines = self.calculate_fittable_lines(line_height);
+        self.fittable_lines = self.calculate_fittable_lines(font_size, line_space);
     }
 
-    pub fn update_pad<F>(&mut self, line_height: f32, f: F)
+    /// Mutate the padding of the editor and recalculate [`Self::fittable_lines`]
+    pub fn update_pad<F>(&mut self, font_size: f32, line_space: f32, f: F)
     where
         F: FnOnce(&mut Vector2),
     {
         f(&mut self.pad);
-        self.fittable_lines = self.calculate_fittable_lines(line_height);
+        self.fittable_lines = self.calculate_fittable_lines(font_size, line_space);
     }
 
+    /// Tick the editor
     pub fn update<I>(&mut self, rl: &mut RaylibHandle, inputs: I)
     where
-        I: IntoIterator<Item = KeyInput>,
+        Doc: EditableDocument,
+        I: IntoIterator<Item = KeyInput<Doc::Char>>,
     {
         let is_shifting = rl.is_key_down(KEY_LEFT_SHIFT) || rl.is_key_down(KEY_RIGHT_SHIFT);
         let is_ctrling = rl.is_key_down(KEY_LEFT_CONTROL) || rl.is_key_down(KEY_RIGHT_CONTROL);
-        let is_alting = rl.is_key_down(KEY_LEFT_ALT) || rl.is_key_down(KEY_RIGHT_ALT);
+        let _is_alting = rl.is_key_down(KEY_LEFT_ALT) || rl.is_key_down(KEY_RIGHT_ALT);
 
         for input in inputs {
             match input {
                 KeyInput::Char(ch) => {
-                    let mut buf = [0; 4];
                     self.content
-                        .replace_range(self.selection, ch.encode_utf8(&mut buf));
-                    self.selection.tail += ch.len_utf8();
+                        .replace_range(self.selection, Doc::char_to_slice(ch, &mut [0; 4]));
+                    self.selection.tail += ch.size();
                     self.selection.head = self.selection.tail;
                 }
 
@@ -339,7 +637,8 @@ impl TextEditor {
                     if self.selection.is_empty() {
                         self.selection.tail = self.selection.tail.saturating_sub(1);
                     }
-                    self.content.replace_range(self.selection, "");
+                    self.content
+                        .replace_range(self.selection, Doc::Slice::empty());
                     self.selection.head = self.selection.tail;
                 }
 
@@ -352,7 +651,8 @@ impl TextEditor {
                             .min(self.content.len());
                     }
                     if *self.selection.start() < self.content.len() {
-                        self.content.replace_range(self.selection, "");
+                        self.content
+                            .replace_range(self.selection, Doc::Slice::empty());
                     }
                     self.selection.head = self.selection.head.min(self.content.len());
                     self.selection.tail = self.selection.head;
@@ -420,24 +720,12 @@ impl TextEditor {
         self.scroll = self
             .scroll
             .saturating_sub_signed(rl.get_mouse_wheel_move() as isize)
-            .min(self.content.lines().count());
+            .min(self.content.line_count());
     }
+}
 
-    pub fn clipped_lines(&self) -> impl Iterator<Item = (Range<usize>, &str)> {
-        self.content
-            .lines()
-            .skip(self.scroll)
-            .take(self.fittable_lines())
-            .map(|line| {
-                (
-                    self.content
-                        .substr_range(line)
-                        .expect("all lines of document should be in document"),
-                    line,
-                )
-            })
-    }
-
+impl TextEditor<String> {
+    /// Render the editor
     pub fn draw<D, T>(&self, d: &mut D, style: &TextStyle<T>)
     where
         D: RaylibDraw + std::ops::DerefMut<Target = RaylibHandle>,
@@ -495,6 +783,18 @@ impl TextEditor {
             );
         }
     }
+
+    /// Get an iterator over the lines that fit inside the content region (clip - pad) of the editor
+    pub fn clipped_lines(&self) -> impl Iterator<Item = (Range<usize>, &str)> {
+        self.content
+            .lines()
+            .skip(self.scroll)
+            .take(self.fittable_lines())
+            .map(|line| match self.content.substr_range(line) {
+                Some(range) => (range, line),
+                None => unreachable!("all lines of `document` should be in `document`"),
+            })
+    }
 }
 
 fn main() {
@@ -520,12 +820,13 @@ fn main() {
         ),
         Vector2::new(5.0, 5.0),
         600,
-        style.line_height(),
+        style.font_size,
+        style.line_space,
     );
 
     while !rl.window_should_close() {
         if rl.is_window_resized() {
-            document.update_clip(style.line_height(), |clip| {
+            document.update_clip(style.font_size, style.line_space, |clip| {
                 clip.height = rl.get_screen_height() as f32
             });
         }
