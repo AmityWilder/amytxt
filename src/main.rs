@@ -1,37 +1,57 @@
 #![feature(substr_range, cmp_minmax)]
 
-use raylib::prelude::{KeyboardKey::*, *};
-use std::ops::{Bound, Range, RangeBounds, RangeInclusive};
+use raylib::prelude::{KeyboardKey::*, MouseButton::*, *};
+use std::ops::{Bound, Index, IndexMut, Range, RangeBounds, RangeInclusive};
 
-trait Document {
+trait Document: Index<Range<usize>> + IndexMut<Range<usize>> {
+    /// The range of values that are safe to index into
+    fn full_range(&self) -> Range<usize>;
+
+    /// Gives the position following the last instance of `delim` at or before `pos`.
     fn start_of(&self, pos: usize, delim: char) -> usize;
+
+    /// Gives the position of the first instance of `delim` at or after `pos`.
     fn end_of(&self, pos: usize, delim: char) -> usize;
 
+    /// Counts the number of newlines before `pos`.
+    fn line_index(&self, pos: usize) -> usize;
+
+    /// Gives the position following the last space at or before `pos`.
     fn word_start(&self, pos: usize) -> usize {
         self.start_of(pos, ' ')
     }
+
+    /// Gives the position of the first space at or after `pos`.
     fn word_end(&self, pos: usize) -> usize {
         self.end_of(pos, ' ')
     }
 
+    /// Gives the position following the last newline at or before `pos`.
     fn line_start(&self, pos: usize) -> usize {
         self.start_of(pos, '\n')
     }
+
+    /// Gives the position of the first newline at or after `pos`.
     fn line_end(&self, pos: usize) -> usize {
         self.end_of(pos, '\n')
     }
-    fn line_index(&self, pos: usize) -> usize;
 
+    /// Snaps `range` to the tightest line boundaries that fully contain it.
     fn line_range(&self, range: Range<usize>) -> Range<usize> {
         self.line_start(range.start)..self.line_end(range.end)
     }
 
+    /// Gives the range of every [`Self::line_index`] that overlaps `range`.
     fn line_indices(&self, range: Range<usize>) -> RangeInclusive<usize> {
         self.line_index(range.start)..=self.line_index(range.end)
     }
 }
 
 impl Document for str {
+    fn full_range(&self) -> Range<usize> {
+        0..self.len()
+    }
+
     fn start_of(&self, pos: usize, delim: char) -> usize {
         self[..pos.min(self.len())]
             .rfind(delim)
@@ -53,8 +73,8 @@ impl Document for str {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Selection {
-    head: usize,
-    tail: usize,
+    pub head: usize,
+    pub tail: usize,
 }
 
 impl Selection {
@@ -235,24 +255,30 @@ fn main() {
             .enumerate()
         {
             let document_linenum = screen_linenum - scroll;
-            let line_range = document
-                .substr_range(line)
-                .expect("all lines of document should be in document");
             if selection_lines.contains(&document_linenum) {
+                let line_range = document
+                    .substr_range(line)
+                    .expect("all lines of document should be in document");
                 let selection_range = Range::from(selection);
-                let start = selection_range.start.saturating_sub(line_range.start);
-                let end = selection_range
+                // start of the selection clamped to the start of the line
+                // - if the start is within this line, it becomes its offset from the start of the line
+                // - if the start is before this line, it clamps to 0
+                // - if the start is after this line, we would not have reached this point
+                let inline_start = selection_range.start.saturating_sub(line_range.start);
+                // end of the selection clamped to the end of the line
+                // - if the end is within this line, it becomes its offset from the start of the line
+                // - if the end is before this line, we would not have reached this point
+                // - if the end is after this line, it clamps to the length of the line
+                let inline_end = selection_range
                     .end
-                    .checked_sub(line_range.start)
-                    .unwrap_or(line_range.len())
-                    .min(line_range.len());
-                let pre_width = selection_range
-                    .start
-                    .checked_sub(line_range.start)
-                    .map_or(0.0, |start| {
-                        font.measure_text(&line[..start], font_size, spacing).x
-                    });
-                let selected_width = font.measure_text(&line[start..end], font_size, spacing).x;
+                    .min(line_range.end)
+                    .saturating_sub(line_range.start);
+                let pre_width = font
+                    .measure_text(&line[..inline_start], font_size, spacing)
+                    .x;
+                let selected_width = font
+                    .measure_text(&line[inline_start..inline_end], font_size, spacing)
+                    .x;
                 d.draw_rectangle_rec(
                     Rectangle::new(
                         padding.x
