@@ -139,27 +139,67 @@ impl std::ops::Index<Selection> for str {
     }
 }
 
-fn main() {
-    let mut document = String::new();
-    let mut selection = Selection { head: 0, tail: 0 };
-    let font_size = 20.0;
-    let spacing = font_size / 10.0;
-    let line_space = 2.0;
-    let padding = Vector2::new(5.0, 5.0);
-    let background_color = Color::new(27, 27, 27, 255);
-    let foreground_color = Color::WHITE;
-    let selection_color = Color::BLUEVIOLET;
-    let min_selection_width = 2.0;
-    let mut scroll: usize = 0;
-    let wrap_width = 600;
+const fn calculate_fittable_lines(clip_height: f32, pad_y: f32, line_height: f32) -> usize {
+    ((clip_height - 2.0 * pad_y) / line_height) as usize
+}
 
-    let (mut rl, thread) = init().title("Amitxt").resizable().build();
-    let font = rl.get_font_default();
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TextEditor {
+    pub content: String,
+    pub scroll: usize,
+    pub selection: Selection,
+    clip: Rectangle,
+    pad: Vector2,
+    fittable_lines: usize,
+    pub wrap: u32,
+}
 
-    let mut lines_per_screen =
-        (rl.get_screen_height() as f32 - 2.0 * padding.y / (font_size + line_space)) as usize;
+impl TextEditor {
+    pub const fn new(clip: Rectangle, pad: Vector2, wrap: u32, line_height: f32) -> Self {
+        Self {
+            content: String::new(),
+            scroll: 0,
+            selection: Selection { head: 0, tail: 0 },
+            clip,
+            pad,
+            fittable_lines: calculate_fittable_lines(clip.height, pad.y, line_height),
+            wrap,
+        }
+    }
 
-    while !rl.window_should_close() {
+    const fn calculate_fittable_lines(&self, line_height: f32) -> usize {
+        calculate_fittable_lines(self.clip.height, self.pad.y, line_height)
+    }
+
+    pub const fn fittable_lines(&self) -> usize {
+        self.fittable_lines
+    }
+
+    pub const fn clip(&self) -> &Rectangle {
+        &self.clip
+    }
+
+    pub const fn pad(&self) -> &Vector2 {
+        &self.pad
+    }
+
+    pub fn update_clip<F>(&mut self, line_height: f32, f: F)
+    where
+        F: FnOnce(&mut Rectangle),
+    {
+        f(&mut self.clip);
+        self.fittable_lines = self.calculate_fittable_lines(line_height);
+    }
+
+    pub fn update_pad<F>(&mut self, line_height: f32, f: F)
+    where
+        F: FnOnce(&mut Vector2),
+    {
+        f(&mut self.pad);
+        self.fittable_lines = self.calculate_fittable_lines(line_height);
+    }
+
+    pub fn update(&mut self, rl: &mut RaylibHandle) {
         let is_shifting = rl.is_key_down(KEY_LEFT_SHIFT) || rl.is_key_down(KEY_RIGHT_SHIFT);
         let is_ctrling = rl.is_key_down(KEY_LEFT_CONTROL) || rl.is_key_down(KEY_RIGHT_CONTROL);
         let is_alting = rl.is_key_down(KEY_LEFT_ALT) || rl.is_key_down(KEY_RIGHT_ALT);
@@ -167,46 +207,55 @@ fn main() {
         let mut is_moved = false;
         if rl.is_key_pressed(KEY_RIGHT) {
             is_moved = true;
-            selection.tail = if selection.is_empty() || is_shifting {
+            self.selection.tail = if self.selection.is_empty() || is_shifting {
                 if is_ctrling {
-                    document.word_end(selection.tail.saturating_add(1).min(document.len()))
+                    self.content.word_end(
+                        self.selection
+                            .tail
+                            .saturating_add(1)
+                            .min(self.content.len()),
+                    )
                 } else {
-                    selection.tail.saturating_add(1).min(document.len())
+                    self.selection
+                        .tail
+                        .saturating_add(1)
+                        .min(self.content.len())
                 }
             } else {
-                *selection.end()
+                *self.selection.end()
             };
         }
         if rl.is_key_pressed(KEY_LEFT) {
             is_moved = true;
-            selection.tail = if selection.is_empty() || is_shifting {
+            self.selection.tail = if self.selection.is_empty() || is_shifting {
                 if is_ctrling {
-                    document.word_start(selection.tail.saturating_sub(1))
+                    self.content
+                        .word_start(self.selection.tail.saturating_sub(1))
                 } else {
-                    selection.tail.saturating_sub(1)
+                    self.selection.tail.saturating_sub(1)
                 }
             } else {
-                *selection.start()
+                *self.selection.start()
             };
         }
         if rl.is_key_pressed(KEY_END) {
             is_moved = true;
-            selection.tail = if is_ctrling {
-                document.len()
+            self.selection.tail = if is_ctrling {
+                self.content.len()
             } else {
-                document.line_end(selection.tail)
+                self.content.line_end(self.selection.tail)
             };
         }
         if rl.is_key_pressed(KEY_HOME) {
             is_moved = true;
-            selection.tail = if is_ctrling {
+            self.selection.tail = if is_ctrling {
                 0
             } else {
-                document.line_start(selection.tail)
+                self.content.line_start(self.selection.tail)
             };
         }
         if is_moved && !is_shifting {
-            selection.head = selection.tail;
+            self.selection.head = self.selection.tail;
         }
 
         if let Some(ch) = rl
@@ -214,52 +263,90 @@ fn main() {
             .or_else(|| rl.is_key_pressed(KEY_ENTER).then_some('\n'))
         {
             let mut buf = [0; 4];
-            document.replace_range(selection, ch.encode_utf8(&mut buf));
-            selection.tail += ch.len_utf8();
-            selection.head = selection.tail;
+            self.content
+                .replace_range(self.selection, ch.encode_utf8(&mut buf));
+            self.selection.tail += ch.len_utf8();
+            self.selection.head = self.selection.tail;
         } else if rl.is_key_pressed(KEY_BACKSPACE) {
-            if selection.is_empty() {
-                selection.tail = selection.tail.saturating_sub(1);
+            if self.selection.is_empty() {
+                self.selection.tail = self.selection.tail.saturating_sub(1);
             }
-            document.replace_range(selection, "");
-            selection.head = selection.tail;
+            self.content.replace_range(self.selection, "");
+            self.selection.head = self.selection.tail;
         } else if rl.is_key_pressed(KEY_DELETE) {
-            if selection.is_empty() {
-                selection.tail = selection.tail.saturating_add(1).min(document.len());
+            if self.selection.is_empty() {
+                self.selection.tail = self
+                    .selection
+                    .tail
+                    .saturating_add(1)
+                    .min(self.content.len());
             }
-            if *selection.start() < document.len() {
-                document.replace_range(selection, "");
+            if *self.selection.start() < self.content.len() {
+                self.content.replace_range(self.selection, "");
             }
-            selection.head = selection.head.min(document.len());
-            selection.tail = selection.head;
+            self.selection.head = self.selection.head.min(self.content.len());
+            self.selection.tail = self.selection.head;
         }
 
-        if rl.is_window_resized() {
-            lines_per_screen = (rl.get_screen_height() as f32
-                - 2.0 * padding.y / (font_size + line_space))
-                as usize;
-        }
-
-        scroll = scroll
+        self.scroll = self
+            .scroll
             .saturating_sub_signed(rl.get_mouse_wheel_move() as isize)
-            .min(document.lines().count());
+            .min(self.content.lines().count());
+    }
+}
+
+fn main() {
+    let font_size = 20.0;
+    let spacing = font_size / 10.0;
+    let line_space = 2.0;
+    // line_height = font_size + line_space
+    let background_color = Color::new(27, 27, 27, 255);
+    let foreground_color = Color::WHITE;
+    let selection_color = Color::BLUEVIOLET;
+    let min_selection_width = 2.0;
+
+    let (mut rl, thread) = init().title("Amitxt").resizable().build();
+    let font = rl.get_font_default();
+
+    let mut document = TextEditor::new(
+        Rectangle::new(
+            0.0,
+            0.0,
+            rl.get_screen_width() as f32,
+            rl.get_screen_height() as f32,
+        ),
+        Vector2::new(5.0, 5.0),
+        600,
+        font_size + line_space,
+    );
+
+    while !rl.window_should_close() {
+        if rl.is_window_resized() {
+            document.update_clip(font_size + line_space, |clip| {
+                clip.height = rl.get_screen_height() as f32
+            });
+        }
+
+        document.update(&mut rl);
 
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(background_color);
 
-        let selection_lines = document.line_indices(selection.into());
+        let selection_lines = document.content.line_indices(document.selection.into());
         for (screen_linenum, line) in document
+            .content
             .lines()
-            .skip(scroll)
-            .take(lines_per_screen)
+            .skip(document.scroll)
+            .take(document.fittable_lines())
             .enumerate()
         {
-            let document_linenum = screen_linenum - scroll;
+            let document_linenum = screen_linenum - document.scroll;
             if selection_lines.contains(&document_linenum) {
                 let line_range = document
+                    .content
                     .substr_range(line)
                     .expect("all lines of document should be in document");
-                let selection_range = Range::from(selection);
+                let selection_range = Range::from(document.selection);
                 // start of the selection clamped to the start of the line
                 // - if the start is within this line, it becomes its offset from the start of the line
                 // - if the start is before this line, it clamps to 0
@@ -281,14 +368,16 @@ fn main() {
                     .x;
                 d.draw_rectangle_rec(
                     Rectangle::new(
-                        padding.x
+                        document.pad.x
                             + pre_width
                             + if selection_range.is_empty() {
                                 -0.5 * min_selection_width
                             } else {
                                 0.0
                             },
-                        padding.y + (document_linenum - scroll) as f32 * (font_size + line_space),
+                        document.pad.y
+                            + (document_linenum - document.scroll) as f32
+                                * (font_size + line_space),
                         (selected_width + spacing).max(min_selection_width),
                         font_size,
                     ),
@@ -299,7 +388,7 @@ fn main() {
             d.draw_text_pro(
                 &font,
                 line,
-                padding + Vector2::new(0.0, screen_linenum as f32 * (font_size + line_space)),
+                document.pad + Vector2::new(0.0, screen_linenum as f32 * (font_size + line_space)),
                 Vector2::zero(),
                 0.0,
                 font_size,
