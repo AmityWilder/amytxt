@@ -198,14 +198,16 @@ pub const trait Document {
     /// This method may panic if any of the following is true:
     /// - `line_height` is non-positive
     /// - `point` or `line_height` is subnormal
-    fn find_line(&self, line_height: f32, point: f32) -> usize {
+    fn find_line(&self, line_height: f32, point: f32, offset: usize) -> usize {
         assert!(line_height > 0.0);
         assert!((point == 0.0 || point.is_normal()) && line_height.is_normal());
-        ((point / line_height) as usize).min(self.line_count().saturating_sub(1))
+        ((point / line_height) as usize)
+            .saturating_add(offset)
+            .min(self.line_count().saturating_sub(1))
     }
 
     /// Finds the range between newline characters on the line found with [`Self::find_line`]
-    fn find_line_slice(&self, line_height: f32, point: f32) -> &Self::Slice<'_>;
+    fn find_line_slice(&self, line_height: f32, point: f32, offset: usize) -> &Self::Slice<'_>;
 
     /// Given a horizontal point within a line, locates the nearest character
     /// position to the point in the line, clamped to the line bounds.
@@ -320,9 +322,9 @@ impl Document for str {
         }
     }
 
-    fn find_line_slice(&self, line_height: f32, point: f32) -> &Self::Slice<'_> {
+    fn find_line_slice(&self, line_height: f32, point: f32, offset: usize) -> &Self::Slice<'_> {
         self.lines()
-            .nth(self.find_line(line_height, point))
+            .nth(self.find_line(line_height, point, offset))
             .unwrap_or(&self[self.len()..])
     }
 
@@ -439,8 +441,8 @@ where
     }
 
     #[inline]
-    fn find_line_slice(&self, line_height: f32, point: f32) -> &Self::Slice<'_> {
-        self.deref().find_line_slice(line_height, point)
+    fn find_line_slice(&self, line_height: f32, point: f32, offset: usize) -> &Self::Slice<'_> {
+        self.deref().find_line_slice(line_height, point, offset)
     }
 
     #[inline]
@@ -851,7 +853,7 @@ impl<Doc> TextEditor<Doc> {
             let line = self
                 .content
                 // something is wrong here and it's always going to 0
-                .find_line_slice(style.line_height(), mouse_point_rel.y);
+                .find_line_slice(style.line_height(), mouse_point_rel.y, self.scroll);
             let pos = self.content.subset_range(line).start
                 + line.find_pos(mouse_point_rel.x, |s| style.text_width(s));
             self.selection.tail = pos;
