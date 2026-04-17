@@ -39,8 +39,11 @@
     clippy::missing_docs_in_private_items
 )]
 
-use raylib::prelude::{KeyboardKey::*, *};
-use std::ops::*;
+use raylib::prelude::{KeyboardKey::*, MouseButton::*, *};
+use std::{
+    ops::*,
+    time::{Duration, Instant},
+};
 
 /// Types that can be treated as characters in text
 pub const trait Character: Sized + Copy + [const] Ord {
@@ -184,6 +187,31 @@ pub const trait Document {
     fn line_indices(&self, range: Range<usize>) -> RangeInclusive<usize> {
         self.line_index(range.start)..=self.line_index(range.end)
     }
+
+    /// Given a vertical point within the document, identifies the index of the
+    /// last line that is not further in the document than the point.
+    ///
+    /// # Warning
+    /// Assumes there is no line wrapping in the document.
+    fn find_line(&self, line_height: f32, point: f32) -> usize {
+        ((point / line_height) as usize).min(self.line_count().saturating_sub(1))
+    }
+
+    /// Finds the range between newline characters on the line found with [`Self::find_line`]
+    fn find_line_slice(&self, line_height: f32, point: f32) -> &Self::Slice<'_>;
+
+    /// Given a horizontal point within a line, locates the nearest character
+    /// position to the point in the line, clamped to the line bounds.
+    ///
+    /// Uses `F` to measure subsets of the slice.
+    ///
+    /// Rounds towards the start of the document.
+    ///
+    /// # Warning
+    /// Assumes `self` is single-line slice and is not wrapped.
+    fn find_pos<F>(&self, point: f32, measure: F) -> usize
+    where
+        F: FnMut(&Self::Slice<'_>) -> f32;
 }
 
 impl Document for str {
@@ -278,6 +306,55 @@ impl Document for str {
             None => self.len(),
         }
     }
+
+    fn find_line_slice(&self, line_height: f32, point: f32) -> &Self::Slice<'_> {
+        self.lines()
+            .nth(self.find_line(line_height, point))
+            .unwrap_or(&self[self.len()..])
+    }
+
+    // TODO: Could this be converted to binary search?
+    fn find_pos<F>(&self, point: f32, mut measure: F) -> usize
+    where
+        F: FnMut(&Self::Slice<'_>) -> f32,
+    {
+        debug_assert!(!self.contains('\n'), "find_pos expects a single line");
+        const IMPLEMENTATION: usize = 0;
+        match IMPLEMENTATION {
+            // measure entire string each time
+            0 => self
+                .char_indices()
+                // .skip(1) // ignore the zero-th character
+                .map(|(idx, _)| idx)
+                .find(|&idx| point <= measure(&self[..self.next_char(idx)]))
+                .unwrap_or(self.len()),
+
+            // measure one character at a time (in case the measure fn iterates over all the characters too; converts O(n^2) -> O(n))
+            // TODO: maybe not accounting for spacing?
+            1 => {
+                let mut width = 0.0;
+                self.char_indices()
+                    .map(|(idx, _)| idx)
+                    .find(|&idx| {
+                        let s = &self[idx..self.next_char(idx)];
+                        let new_width = width + measure(s);
+                        if width <= point && point < new_width {
+                            return true;
+                        }
+                        width = new_width;
+                        false
+                    })
+                    .unwrap_or(self.len())
+            }
+
+            // binary search
+            2 => {
+                todo!("binary search implementation")
+            }
+
+            _ => unimplemented!(),
+        }
+    }
 }
 
 impl<T, U: ?Sized> const Document for T
@@ -340,6 +417,19 @@ where
     #[inline]
     fn line_index(&self, pos: usize) -> usize {
         self.deref().line_index(pos)
+    }
+
+    #[inline]
+    fn find_line_slice(&self, line_height: f32, point: f32) -> &Self::Slice<'_> {
+        self.deref().find_line_slice(line_height, point)
+    }
+
+    #[inline]
+    fn find_pos<F>(&self, point: f32, measure: F) -> usize
+    where
+        F: FnMut(&Self::Slice<'_>) -> f32,
+    {
+        self.deref().find_pos(point, measure)
     }
 }
 
@@ -519,6 +609,8 @@ const fn fittable_lines(clip_height: f32, pad_y: f32, font_size: f32, line_space
 
 /// A [`KeyboardKey`] that performs an action when pressed
 /// (rather than modifying another while held)
+///
+/// All [`KeyInput`]s are repeatable
 #[derive(Debug, Copy, Hash)]
 #[derive_const(Clone, PartialEq, Eq)]
 pub enum KeyInput<Ch = char> {
@@ -562,6 +654,59 @@ impl KeyInput {
     }
 }
 
+/// Repeat a [`KeyInput`] while it is held down
+#[derive(Debug, Copy, PartialEq, Eq, Hash)]
+#[derive_const(Clone)]
+pub struct KeyRepeater {
+    /// The key to repeat and the timestamp of when it will be to repeat
+    ///
+    /// Only the most recently pressed key can be repeated
+    pub input: Option<(KeyInput, Instant)>,
+    /// How long to wait before repeating a key input after the initial press
+    pub start_delay: Duration,
+    /// How long to wait between key input repetitions after `start_delay`
+    pub period: Duration,
+}
+
+impl const Default for KeyRepeater {
+    fn default() -> Self {
+        Self::new(Duration::ZERO, Duration::ZERO)
+    }
+}
+
+impl KeyRepeater {
+    /// Construct a new [`KeyRepeater`] without an input initially
+    pub const fn new(start_delay: Duration, period: Duration) -> Self {
+        Self {
+            input: None,
+            start_delay,
+            period,
+        }
+    }
+
+    /// Indicate that a key has been pressed and replace the held key
+    pub fn press(&mut self, input: KeyInput) {
+        self.input = Some((input, Instant::now() + self.start_delay));
+    }
+
+    /// Indicate that a key has been released and clear the held key if it matches
+    pub fn release(&mut self, input: &KeyInput) {
+        if self.input.as_ref().is_some_and(|(key, _)| key == input) {
+            self.input = None;
+        }
+    }
+
+    /// Get the key input if there is one and this tick should repeat it
+    pub fn check_repeat(&self) -> Option<KeyInput> {
+        self.input.and_then(|(key, pressed)| {
+            let now = Instant::now();
+            now.checked_duration_since(pressed)
+                .is_some_and(|duration| duration.as_nanos() % self.period.as_nanos() == 0)
+                .then_some(key)
+        })
+    }
+}
+
 /// A container for editable text
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextEditor<Doc> {
@@ -583,6 +728,8 @@ pub struct TextEditor<Doc> {
     /// How many pixels wide a line can get before wrapping
     /// (TODO: doesn't this affect how many lines there are?)
     pub wrap: u32,
+    /// How the editor should repeat key inputs
+    pub key_repeat: KeyRepeater,
 }
 
 impl<Doc: [const] Default> const Default for TextEditor<Doc> {
@@ -595,6 +742,7 @@ impl<Doc: [const] Default> const Default for TextEditor<Doc> {
             pad: Vector2::zero(),
             fittable_lines: Default::default(),
             wrap: Default::default(),
+            key_repeat: Default::default(),
         }
     }
 }
@@ -607,6 +755,7 @@ impl<Doc> TextEditor<Doc> {
         wrap: u32,
         font_size: f32,
         line_space: f32,
+        key_repeat: KeyRepeater,
     ) -> Self
     where
         Doc: [const] Default,
@@ -619,6 +768,7 @@ impl<Doc> TextEditor<Doc> {
             pad,
             fittable_lines: fittable_lines(clip.height, pad.y, font_size, line_space),
             wrap,
+            key_repeat,
         }
     }
 
@@ -661,14 +811,30 @@ impl<Doc> TextEditor<Doc> {
     }
 
     /// Tick the editor
-    pub fn update<I>(&mut self, rl: &mut RaylibHandle, inputs: I)
+    pub fn update<I, T>(&mut self, rl: &mut RaylibHandle, inputs: I, style: &TextStyle<T>)
     where
-        Doc: EditableDocument,
+        Doc: for<'a> EditableDocument<Slice<'a> = str>,
         I: IntoIterator<Item = KeyInput<Doc::Char>>,
+        T: RaylibFont,
     {
         let is_shifting = rl.is_key_down(KEY_LEFT_SHIFT) || rl.is_key_down(KEY_RIGHT_SHIFT);
         let is_ctrling = rl.is_key_down(KEY_LEFT_CONTROL) || rl.is_key_down(KEY_RIGHT_CONTROL);
         let _is_alting = rl.is_key_down(KEY_LEFT_ALT) || rl.is_key_down(KEY_RIGHT_ALT);
+
+        if rl.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+            let mouse_point = rl.get_mouse_position();
+            let line = self.content.find_line_slice(
+                style.line_height(),
+                mouse_point.y - self.clip.y - self.pad.y,
+            );
+            let pos = line.find_pos(mouse_point.x - self.clip.x - self.pad.x, |s| {
+                style.text_width(s)
+            });
+            self.selection.tail = pos;
+            if rl.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) && !is_shifting {
+                self.selection.head = self.selection.tail;
+            }
+        }
 
         for input in inputs {
             debug_assert!(
@@ -887,6 +1053,7 @@ fn main() {
         600,
         style.font_size,
         style.line_space,
+        KeyRepeater::new(Duration::from_millis(500), Duration::from_millis(200)),
     );
 
     while !rl.window_should_close() {
@@ -900,7 +1067,8 @@ fn main() {
             .into_iter()
             .flatten()
             .collect();
-        document.update(&mut rl, input_buffer);
+
+        document.update(&mut rl, input_buffer, &style);
 
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(style.background_color);
