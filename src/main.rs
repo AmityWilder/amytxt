@@ -140,22 +140,19 @@ pub const trait Document {
     /// Gives a [`Self::Slice`] covering the entire document, which can then be range-indexed
     fn as_slice(&self) -> &Self::Slice<'_>;
 
+    /// Returns the start position of the character following the one starting at `pos`, clamped to the document bounds
+    fn next_char(&self, pos: usize) -> usize;
+
+    /// Returns the start position of the character preceeding the one starting at `pos`, clamped to the document bounds
+    fn prev_char(&self, pos: usize) -> usize;
+
     /// Gives the position following the last instance of `delim` at or before `pos`.
-    ///
-    /// # Panics
-    /// This method is allowed to panic if `pos` is not bounded to 0..[`len`](`Self::len`).
     fn start_of(&self, pos: usize, delim: Self::Char) -> usize;
 
     /// Gives the position of the first instance of `delim` at or after `pos`.
-    ///
-    /// # Panics
-    /// This method is allowed to panic if `pos` is not bounded to 0..[`len`](`Self::len`).
     fn end_of(&self, pos: usize, delim: Self::Char) -> usize;
 
     /// Counts the number of newlines before `pos`.
-    ///
-    /// # Panics
-    /// This method is allowed to panic if `pos` is not bounded to 0..[`len`](`Self::len`).
     fn line_index(&self, pos: usize) -> usize;
 
     /// Gives the position following the last space or newline at or before `pos`.
@@ -228,8 +225,23 @@ impl Document for str {
         self
     }
 
+    fn next_char(&self, pos: usize) -> usize {
+        debug_assert!(pos <= self.len(), "pos should be in bounds");
+        debug_assert!(self.is_char_boundary(pos), "pos should be at a valid char");
+        self[pos..]
+            .chars()
+            .next()
+            .map_or(self.len(), |ch| pos + ch.len_utf8())
+    }
+
+    fn prev_char(&self, pos: usize) -> usize {
+        debug_assert!(pos <= self.len(), "pos should be in bounds");
+        debug_assert!(self.is_char_boundary(pos), "pos should be at a valid char");
+        self[..pos].char_indices().next_back().map_or(0, |(i, _)| i)
+    }
+
     fn start_of(&self, pos: usize, delim: char) -> usize {
-        assert!(pos <= self.len(), "pos should be in bounds");
+        debug_assert!(pos <= self.len(), "pos should be in bounds");
         match self[..pos].rfind(delim) {
             Some(i) => i + delim.len_utf8(),
             None => 0,
@@ -237,7 +249,7 @@ impl Document for str {
     }
 
     fn end_of(&self, pos: usize, delim: char) -> usize {
-        assert!(pos <= self.len(), "pos should be in bounds");
+        debug_assert!(pos <= self.len(), "pos should be in bounds");
         match self[pos..].find(delim) {
             Some(i) => i + pos,
             None => self.len(),
@@ -245,7 +257,7 @@ impl Document for str {
     }
 
     fn line_index(&self, pos: usize) -> usize {
-        assert!(pos <= self.len(), "pos should be in bounds");
+        debug_assert!(pos <= self.len(), "pos should be in bounds");
         self[..pos].matches('\n').count()
     }
 }
@@ -275,6 +287,16 @@ where
     #[inline]
     fn as_slice(&self) -> &Self::Slice<'_> {
         self.deref().as_slice()
+    }
+
+    #[inline]
+    fn next_char(&self, pos: usize) -> usize {
+        self.deref().next_char(pos)
+    }
+
+    #[inline]
+    fn prev_char(&self, pos: usize) -> usize {
+        self.deref().prev_char(pos)
     }
 
     #[inline]
@@ -362,6 +384,11 @@ impl Selection {
     /// Whether the selection is for insertion, rather than replacement
     pub const fn is_empty(&self) -> bool {
         self.head == self.tail
+    }
+
+    /// Shorthand for `Range::from(self)`
+    pub const fn range(self) -> Range<usize> {
+        self.into()
     }
 }
 
@@ -626,8 +653,13 @@ impl<Doc> TextEditor<Doc> {
         let _is_alting = rl.is_key_down(KEY_LEFT_ALT) || rl.is_key_down(KEY_RIGHT_ALT);
 
         for input in inputs {
+            debug_assert!(
+                *self.selection.end() <= self.content.len(),
+                "the selection should always be within bounds"
+            );
             match input {
                 KeyInput::Char(ch) => {
+                    // TODO: implement letter-combo hotkeys like ctrl+c/ctrl+v here
                     self.content
                         .replace_range(self.selection, Doc::char_to_slice(ch, &mut [0; 4]));
                     self.selection.tail += ch.size();
@@ -635,66 +667,70 @@ impl<Doc> TextEditor<Doc> {
                 }
 
                 KeyInput::Backspace => {
+                    // select the previous character if none are selected
                     if self.selection.is_empty() {
-                        self.selection.tail = self.selection.tail.saturating_sub(1);
+                        self.selection.tail = self.content.prev_char(self.selection.tail);
                     }
-                    self.content
-                        .replace_range(self.selection, Doc::Slice::empty());
+                    debug_assert!(
+                        *self.selection.start() < self.content.len(),
+                        "even if the tail is is at the end, at least one character within bounds should exist"
+                    );
+                    // erase the selection
+                    self.content.erase_range(self.selection);
+                    // flatten the selection range onto the tail
                     self.selection.head = self.selection.tail;
                 }
 
                 KeyInput::Delete => {
+                    // select the next character if none are selected
                     if self.selection.is_empty() {
-                        self.selection.tail = self
-                            .selection
-                            .tail
-                            .saturating_add(1)
-                            .min(self.content.len());
+                        self.selection.tail = self.content.next_char(self.selection.tail);
                     }
+                    // replace the range as long as the cursor isn't at the end of the text
+                    // (which is a valid position to be in, since that's where it would append characters)
                     if *self.selection.start() < self.content.len() {
-                        self.content
-                            .replace_range(self.selection, Doc::Slice::empty());
+                        self.content.erase_range(self.selection);
                     }
                     self.selection.head = self.selection.head.min(self.content.len());
+                    // flatten the selection range onto the tail
                     self.selection.tail = self.selection.head;
                 }
 
                 KeyInput::Left => {
-                    self.selection.tail = if self.selection.is_empty() || is_shifting {
+                    if is_shifting || self.selection.is_empty() {
+                        self.selection.tail = self.content.prev_char(self.selection.tail);
                         if is_ctrling {
-                            self.content
-                                .word_start(self.selection.tail.saturating_sub(1))
-                        } else {
-                            self.selection.tail.saturating_sub(1)
+                            self.selection.tail = self.content.word_start(self.selection.tail);
                         }
                     } else {
-                        *self.selection.start()
-                    };
+                        self.selection.tail = *self.selection.start();
+                    }
                 }
 
                 KeyInput::Right => {
-                    self.selection.tail = if self.selection.is_empty() || is_shifting {
+                    if is_shifting || self.selection.is_empty() {
+                        self.selection.tail = self.content.next_char(self.selection.tail);
                         if is_ctrling {
-                            self.content.word_end(
-                                self.selection
-                                    .tail
-                                    .saturating_add(1)
-                                    .min(self.content.len()),
-                            )
-                        } else {
-                            self.selection
-                                .tail
-                                .saturating_add(1)
-                                .min(self.content.len())
+                            self.selection.tail = self.content.word_end(self.selection.tail);
                         }
                     } else {
-                        *self.selection.end()
-                    };
+                        self.selection.tail = *self.selection.end();
+                    }
                 }
 
-                KeyInput::Up => println!("todo"),
+                KeyInput::Up => {
+                    self.selection.tail = self
+                        .content
+                        .prev_char(self.content.line_start(self.selection.tail));
+                    // TODO: align with column
+                }
 
-                KeyInput::Down => println!("todo"),
+                KeyInput::Down => {
+                    self.selection.tail = self
+                        .content
+                        .next_char(self.content.line_end(self.selection.tail));
+                    // TODO: align with column
+                }
 
                 KeyInput::Home => {
                     self.selection.tail = if is_ctrling {
