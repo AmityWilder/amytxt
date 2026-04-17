@@ -8,7 +8,6 @@
     const_bool,
     const_cmp,
     const_clone,
-    // const_block_items,
     const_convert,
     const_default,
     // const_for,
@@ -57,7 +56,7 @@ pub const trait Character: Sized + Copy + [const] Ord {
     /// The number of bytes needed to encode the character
     #[inline]
     fn size(self) -> usize {
-        std::mem::size_of::<Self>()
+        const { std::mem::size_of::<Self>() }
     }
 }
 
@@ -91,12 +90,12 @@ pub const trait Slice<'a>: 'a + [const] Index<Range<usize>, Output = Self> {
 }
 impl<'a> const Slice<'a> for str {
     fn empty() -> &'a Self {
-        Default::default()
+        const { Default::default() }
     }
 }
 impl<'a, T: 'a> const Slice<'a> for [T] {
     fn empty() -> &'a Self {
-        Default::default()
+        const { Default::default() }
     }
 }
 
@@ -112,7 +111,7 @@ pub const trait Document {
     type Slice<'a>: ?Sized + [const] Slice<'a> + [const] Document<Slice<'a> = Self::Slice<'a>>;
 
     /// An iterator over lines of text in a document
-    type Lines<'a>: Iterator<Item = &'a Self::Slice<'a>>
+    type Lines<'a>: [const] Iterator<Item = &'a Self::Slice<'a>>
     where
         Self: 'a;
 
@@ -259,6 +258,25 @@ impl Document for str {
     fn line_index(&self, pos: usize) -> usize {
         debug_assert!(pos <= self.len(), "pos should be in bounds");
         self[..pos].matches('\n').count()
+    }
+
+    fn word_start(&self, pos: usize) -> usize {
+        const {
+            assert!(' '.len_utf8() == '\n'.len_utf8());
+        }
+        debug_assert!(pos <= self.len(), "pos should be in bounds");
+        match self[..pos].rfind(const { [' ', '\n'].as_slice() }) {
+            Some(i) => i + const { ' '.len_utf8() },
+            None => 0,
+        }
+    }
+
+    fn word_end(&self, pos: usize) -> usize {
+        debug_assert!(pos <= self.len(), "pos should be in bounds");
+        match self[pos..].find(const { [' ', '\n'].as_slice() }) {
+            Some(i) => i + pos,
+            None => self.len(),
+        }
     }
 }
 
