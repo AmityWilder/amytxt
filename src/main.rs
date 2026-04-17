@@ -193,7 +193,16 @@ pub const trait Document {
     ///
     /// # Warning
     /// Assumes there is no line wrapping in the document.
+    ///
+    /// # Panics
+    /// This method may panic if any of the following is true:
+    /// - `point` is negative
+    /// - `line_height` is non-positive
+    /// - `point` or `line_height` is subnormal
     fn find_line(&self, line_height: f32, point: f32) -> usize {
+        assert!(point >= 0.0);
+        assert!(line_height > 0.0);
+        assert!((point == 0.0 || point.is_normal()) && line_height.is_normal());
         ((point / line_height) as usize).min(self.line_count().saturating_sub(1))
     }
 
@@ -212,6 +221,12 @@ pub const trait Document {
     fn find_pos<F>(&self, point: f32, measure: F) -> usize
     where
         F: FnMut(&Self::Slice<'_>) -> f32;
+
+    /// Get the range of the slice within self
+    ///
+    /// # Panics
+    /// This method may panic if `slice` is not a subset of self
+    fn subset_range(&self, slice: &Self::Slice<'_>) -> Range<usize>;
 }
 
 impl Document for str {
@@ -355,6 +370,12 @@ impl Document for str {
             _ => unimplemented!(),
         }
     }
+
+    #[inline]
+    fn subset_range(&self, slice: &str) -> Range<usize> {
+        self.substr_range(slice)
+            .expect("slice should be a subset of self")
+    }
 }
 
 impl<T, U: ?Sized> const Document for T
@@ -430,6 +451,11 @@ where
         F: FnMut(&Self::Slice<'_>) -> f32,
     {
         self.deref().find_pos(point, measure)
+    }
+
+    #[inline]
+    fn subset_range(&self, slice: &Self::Slice<'_>) -> Range<usize> {
+        self.deref().subset_range(slice)
     }
 }
 
@@ -819,17 +845,17 @@ impl<Doc> TextEditor<Doc> {
     {
         let is_shifting = rl.is_key_down(KEY_LEFT_SHIFT) || rl.is_key_down(KEY_RIGHT_SHIFT);
         let is_ctrling = rl.is_key_down(KEY_LEFT_CONTROL) || rl.is_key_down(KEY_RIGHT_CONTROL);
-        let _is_alting = rl.is_key_down(KEY_LEFT_ALT) || rl.is_key_down(KEY_RIGHT_ALT);
+        // let is_alting = rl.is_key_down(KEY_LEFT_ALT) || rl.is_key_down(KEY_RIGHT_ALT);
 
         if rl.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
             let mouse_point = rl.get_mouse_position();
-            let line = self.content.find_line_slice(
-                style.line_height(),
-                mouse_point.y - self.clip.y - self.pad.y,
-            );
-            let pos = line.find_pos(mouse_point.x - self.clip.x - self.pad.x, |s| {
-                style.text_width(s)
-            });
+            let mouse_point_rel = mouse_point - Vector2::new(self.clip.x, self.clip.y) - self.pad;
+            let line = self
+                .content
+                // something is wrong here and it's always going to 0
+                .find_line_slice(style.line_height(), mouse_point_rel.y);
+            let pos = self.content.subset_range(line).start
+                + line.find_pos(mouse_point_rel.x, |s| style.text_width(s));
             self.selection.tail = pos;
             if rl.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) && !is_shifting {
                 self.selection.head = self.selection.tail;
