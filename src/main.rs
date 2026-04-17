@@ -196,11 +196,9 @@ pub const trait Document {
     ///
     /// # Panics
     /// This method may panic if any of the following is true:
-    /// - `point` is negative
     /// - `line_height` is non-positive
     /// - `point` or `line_height` is subnormal
     fn find_line(&self, line_height: f32, point: f32) -> usize {
-        assert!(point >= 0.0);
         assert!(line_height > 0.0);
         assert!((point == 0.0 || point.is_normal()) && line_height.is_normal());
         ((point / line_height) as usize).min(self.line_count().saturating_sub(1))
