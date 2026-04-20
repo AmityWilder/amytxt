@@ -73,16 +73,6 @@ impl const Character for char {
         self.len_utf8()
     }
 }
-impl const Character for u8 {
-    const SPACE: Self = b' ';
-    const NEWLINE: Self = b'\n';
-    const MAX_SIZE: usize = std::mem::size_of::<Self>();
-}
-impl const Character for std::ffi::c_char {
-    const SPACE: Self = b' ' as Self;
-    const NEWLINE: Self = b'\n' as Self;
-    const MAX_SIZE: usize = std::mem::size_of::<Self>();
-}
 
 /// A subset of an array
 ///
@@ -96,34 +86,13 @@ impl<'a> const Slice<'a> for str {
         const { Default::default() }
     }
 }
-impl<'a, T: 'a> const Slice<'a> for [T] {
-    fn empty() -> &'a Self {
-        const { Default::default() }
-    }
-}
 
 /// Any form of text that can be selected and edited like a Word document
 pub const trait Document {
-    /// The character type for the implementation
-    type Char: [const] Character;
-
-    /// The type given by indexing the document.
-    ///
-    /// While a document may output slices of a different type from itself (e.g. String -> str),
-    /// the slice should always output its own type (str -> str).
-    type Slice<'a>: ?Sized + [const] Slice<'a> + [const] Document<Slice<'a> = Self::Slice<'a>>;
-
     /// An iterator over lines of text in a document
-    type Lines<'a>: [const] Iterator<Item = &'a Self::Slice<'a>>
+    type Lines<'a>: [const] Iterator<Item = &'a str>
     where
         Self: 'a;
-
-    /// Convert a [`Char`] into a [`Slice`] for the purpose of insertion through [`replace_range`]
-    ///
-    /// [`Char`]: Self::Char
-    /// [`Slice`]: Self::Slice
-    /// [`replace_range`]: EditableDocument::replace_range
-    fn char_to_slice(ch: Self::Char, buf: &mut [u8]) -> &mut Self::Slice<'_>;
 
     /// The range of values that are safe to index into
     fn len(&self) -> usize;
@@ -140,7 +109,7 @@ pub const trait Document {
     fn line_count(&self) -> usize;
 
     /// Gives a [`Self::Slice`] covering the entire document, which can then be range-indexed
-    fn as_slice(&self) -> &Self::Slice<'_>;
+    fn as_slice(&self) -> &str;
 
     /// Returns the start position of the character following the one starting at `pos`, clamped to the document bounds
     fn next_char(&self, pos: usize) -> usize;
@@ -149,33 +118,32 @@ pub const trait Document {
     fn prev_char(&self, pos: usize) -> usize;
 
     /// Gives the position following the last instance of `delim` at or before `pos`.
-    fn start_of(&self, pos: usize, delim: Self::Char) -> usize;
+    fn start_of(&self, pos: usize, delim: char) -> usize;
 
     /// Gives the position of the first instance of `delim` at or after `pos`.
-    fn end_of(&self, pos: usize, delim: Self::Char) -> usize;
+    fn end_of(&self, pos: usize, delim: char) -> usize;
 
     /// Counts the number of newlines before `pos`.
     fn line_index(&self, pos: usize) -> usize;
 
     /// Gives the position following the last space or newline at or before `pos`.
     fn word_start(&self, pos: usize) -> usize {
-        self.start_of(pos, Self::Char::SPACE)
-            .max(self.line_start(pos))
+        self.start_of(pos, ' ').max(self.line_start(pos))
     }
 
     /// Gives the position of the first space or newline at or after `pos`.
     fn word_end(&self, pos: usize) -> usize {
-        self.end_of(pos, Self::Char::SPACE).min(self.line_end(pos))
+        self.end_of(pos, ' ').min(self.line_end(pos))
     }
 
     /// Gives the position following the last newline at or before `pos`.
     fn line_start(&self, pos: usize) -> usize {
-        self.start_of(pos, Self::Char::NEWLINE)
+        self.start_of(pos, '\n')
     }
 
     /// Gives the position of the first newline at or after `pos`.
     fn line_end(&self, pos: usize) -> usize {
-        self.end_of(pos, Self::Char::NEWLINE)
+        self.end_of(pos, '\n')
     }
 
     /// Snaps `range` to the tightest line boundaries that fully contain it.
@@ -207,7 +175,7 @@ pub const trait Document {
     }
 
     /// Finds the range between newline characters on the line found with [`Self::find_line`]
-    fn find_line_slice(&self, line_height: f32, point: f32, offset: usize) -> &Self::Slice<'_>;
+    fn find_line_slice(&self, line_height: f32, point: f32, offset: usize) -> &str;
 
     /// Given a horizontal point within a line, locates the nearest character
     /// position to the point in the line, clamped to the line bounds.
@@ -220,27 +188,20 @@ pub const trait Document {
     /// Assumes `self` is single-line slice and is not wrapped.
     fn find_pos<F>(&self, point: f32, measure: F) -> usize
     where
-        F: FnMut(&Self::Slice<'_>) -> f32;
+        F: FnMut(&str) -> f32;
 
     /// Get the range of the slice within self
     ///
     /// # Panics
     /// This method may panic if `slice` is not a subset of self
-    fn subset_range(&self, slice: &Self::Slice<'_>) -> Range<usize>;
+    fn subset_range(&self, slice: &str) -> Range<usize>;
 }
 
 impl Document for str {
-    type Char = char;
-    type Slice<'a> = str;
     type Lines<'a>
         = std::str::Lines<'a>
     where
         Self: 'a;
-
-    #[inline]
-    fn char_to_slice(ch: char, buf: &mut [u8]) -> &mut str {
-        ch.encode_utf8(buf)
-    }
 
     #[inline]
     fn len(&self) -> usize {
@@ -263,7 +224,7 @@ impl Document for str {
     }
 
     #[inline]
-    fn as_slice(&self) -> &Self::Slice<'_> {
+    fn as_slice(&self) -> &str {
         self
     }
 
@@ -322,7 +283,7 @@ impl Document for str {
         }
     }
 
-    fn find_line_slice(&self, line_height: f32, point: f32, offset: usize) -> &Self::Slice<'_> {
+    fn find_line_slice(&self, line_height: f32, point: f32, offset: usize) -> &str {
         self.lines()
             .nth(self.find_line(line_height, point, offset))
             .unwrap_or(&self[self.len()..])
@@ -331,7 +292,7 @@ impl Document for str {
     // TODO: Could this be converted to binary search?
     fn find_pos<F>(&self, point: f32, mut measure: F) -> usize
     where
-        F: FnMut(&Self::Slice<'_>) -> f32,
+        F: FnMut(&str) -> f32,
     {
         debug_assert!(!self.contains('\n'), "find_pos expects a single line");
         self.char_indices()
@@ -354,22 +315,14 @@ impl Document for str {
     }
 }
 
-impl<T, U: ?Sized> const Document for T
+impl<T> Document for T
 where
-    T: [const] Deref<Target = U>,
-    for<'a> U: [const] Slice<'a, Output = U> + [const] Document<Slice<'a> = U>,
+    T: Deref<Target = str>,
 {
-    type Char = U::Char;
-    type Slice<'a> = U::Slice<'a>;
     type Lines<'a>
-        = U::Lines<'a>
+        = <str as Document>::Lines<'a>
     where
         Self: 'a;
-
-    #[inline]
-    fn char_to_slice(ch: Self::Char, buf: &mut [u8]) -> &mut Self::Slice<'_> {
-        U::char_to_slice(ch, buf)
-    }
 
     #[inline]
     fn len(&self) -> usize {
@@ -377,7 +330,7 @@ where
     }
 
     #[inline]
-    fn as_slice(&self) -> &Self::Slice<'_> {
+    fn as_slice(&self) -> &str {
         self.deref().as_slice()
     }
 
@@ -402,12 +355,12 @@ where
     }
 
     #[inline]
-    fn start_of(&self, pos: usize, delim: Self::Char) -> usize {
+    fn start_of(&self, pos: usize, delim: char) -> usize {
         self.deref().start_of(pos, delim)
     }
 
     #[inline]
-    fn end_of(&self, pos: usize, delim: Self::Char) -> usize {
+    fn end_of(&self, pos: usize, delim: char) -> usize {
         self.deref().end_of(pos, delim)
     }
 
@@ -417,20 +370,20 @@ where
     }
 
     #[inline]
-    fn find_line_slice(&self, line_height: f32, point: f32, offset: usize) -> &Self::Slice<'_> {
+    fn find_line_slice(&self, line_height: f32, point: f32, offset: usize) -> &str {
         self.deref().find_line_slice(line_height, point, offset)
     }
 
     #[inline]
     fn find_pos<F>(&self, point: f32, measure: F) -> usize
     where
-        F: FnMut(&Self::Slice<'_>) -> f32,
+        F: FnMut(&str) -> f32,
     {
         self.deref().find_pos(point, measure)
     }
 
     #[inline]
-    fn subset_range(&self, slice: &Self::Slice<'_>) -> Range<usize> {
+    fn subset_range(&self, slice: &str) -> Range<usize> {
         self.deref().subset_range(slice)
     }
 }
@@ -442,7 +395,7 @@ pub const trait EditableDocument: [const] Document {
     /// Replacing a non-empty range with an empty slice erases the range
     ///
     /// Replacing an empty range with a non-empty slice inserts the range
-    fn replace_range<R>(&mut self, range: R, replace_with: &Self::Slice<'_>)
+    fn replace_range<R>(&mut self, range: R, replace_with: &str)
     where
         R: [const] RangeBounds<usize>;
 
@@ -451,13 +404,13 @@ pub const trait EditableDocument: [const] Document {
     where
         R: [const] RangeBounds<usize>,
     {
-        self.replace_range(range, Self::Slice::empty());
+        self.replace_range(range, "");
     }
 }
 
 impl EditableDocument for String {
     #[inline]
-    fn replace_range<R>(&mut self, range: R, replace_with: &Self::Slice<'_>)
+    fn replace_range<R>(&mut self, range: R, replace_with: &str)
     where
         R: RangeBounds<usize>,
     {
@@ -615,9 +568,9 @@ const fn fittable_lines(clip_height: f32, pad_y: f32, font_size: f32, line_space
 /// All [`KeyInput`]s are repeatable
 #[derive(Debug, Copy, Hash)]
 #[derive_const(Clone, PartialEq, Eq)]
-pub enum KeyInput<Ch = char> {
+pub enum KeyInput {
     /// A character being typed (includes enter/return as `'\n'`)
-    Char(Ch),
+    Char(char),
     /// Erase the character before the cursor (or all characters selected)
     Backspace,
     /// Erase the character after the cursor (or all characters selected)
@@ -711,9 +664,9 @@ impl KeyRepeater {
 
 /// A container for editable text
 #[derive(Debug, Clone, PartialEq)]
-pub struct TextEditor<Doc> {
+pub struct TextEditor {
     /// The text content of the document
-    pub content: Doc,
+    pub content: String,
     /// How many lines to offset
     pub scroll: usize,
     /// The current selection within the document
@@ -734,10 +687,10 @@ pub struct TextEditor<Doc> {
     pub key_repeat: KeyRepeater,
 }
 
-impl<Doc: [const] Default> const Default for TextEditor<Doc> {
+impl const Default for TextEditor {
     fn default() -> Self {
         Self {
-            content: Default::default(),
+            content: String::new(),
             scroll: Default::default(),
             selection: Default::default(),
             clip: Rectangle::new(0.0, 0.0, 0.0, 0.0),
@@ -749,7 +702,7 @@ impl<Doc: [const] Default> const Default for TextEditor<Doc> {
     }
 }
 
-impl<Doc> TextEditor<Doc> {
+impl TextEditor {
     /// Construct a new [`TextEditor`] with a blank document
     pub const fn new(
         clip: Rectangle,
@@ -758,12 +711,9 @@ impl<Doc> TextEditor<Doc> {
         font_size: f32,
         line_space: f32,
         key_repeat: KeyRepeater,
-    ) -> Self
-    where
-        Doc: [const] Default,
-    {
+    ) -> Self {
         Self {
-            content: Doc::default(),
+            content: String::new(),
             scroll: 0,
             selection: Selection { head: 0, tail: 0 },
             clip,
@@ -815,8 +765,7 @@ impl<Doc> TextEditor<Doc> {
     /// Tick the editor
     pub fn update<I, T>(&mut self, rl: &mut RaylibHandle, inputs: I, style: &TextStyle<T>)
     where
-        Doc: for<'a> EditableDocument<Slice<'a> = str>,
-        I: IntoIterator<Item = KeyInput<Doc::Char>>,
+        I: IntoIterator<Item = KeyInput>,
         T: RaylibFont,
     {
         let is_shifting = rl.is_key_down(KEY_LEFT_SHIFT) || rl.is_key_down(KEY_RIGHT_SHIFT);
@@ -847,8 +796,8 @@ impl<Doc> TextEditor<Doc> {
                 KeyInput::Char(ch) => {
                     // TODO: implement letter-combo hotkeys like ctrl+c/ctrl+v here
                     self.content
-                        .replace_range(self.selection, Doc::char_to_slice(ch, &mut [0; 4]));
-                    self.selection.tail += ch.size();
+                        .replace_range(self.selection, ch.encode_utf8(&mut [0; 4]));
+                    self.selection.tail += ch.len_utf8();
                     self.selection.head = self.selection.tail;
                 }
 
@@ -945,9 +894,7 @@ impl<Doc> TextEditor<Doc> {
             .saturating_sub_signed(rl.get_mouse_wheel_move() as isize)
             .min(self.content.line_count());
     }
-}
 
-impl TextEditor<String> {
     /// Get an iterator over lines and their ranges within `content`
     pub fn ranged_lines(&self) -> impl DoubleEndedIterator<Item = (Range<usize>, &str)> {
         self.content
