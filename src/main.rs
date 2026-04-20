@@ -334,41 +334,17 @@ impl Document for str {
         F: FnMut(&Self::Slice<'_>) -> f32,
     {
         debug_assert!(!self.contains('\n'), "find_pos expects a single line");
-        const IMPLEMENTATION: usize = 0;
-        match IMPLEMENTATION {
-            // measure entire string each time
-            0 => self
-                .char_indices()
-                // .skip(1) // ignore the zero-th character
-                .map(|(idx, _)| idx)
-                .find(|&idx| point <= measure(&self[..self.next_char(idx)]))
-                .unwrap_or(self.len()),
-
-            // measure one character at a time (in case the measure fn iterates over all the characters too; converts O(n^2) -> O(n))
-            // TODO: maybe not accounting for spacing?
-            1 => {
-                let mut width = 0.0;
-                self.char_indices()
-                    .map(|(idx, _)| idx)
-                    .find(|&idx| {
-                        let s = &self[idx..self.next_char(idx)];
-                        let new_width = width + measure(s);
-                        if width <= point && point < new_width {
-                            return true;
-                        }
-                        width = new_width;
-                        false
-                    })
-                    .unwrap_or(self.len())
-            }
-
-            // binary search
-            2 => {
-                todo!("binary search implementation")
-            }
-
-            _ => unimplemented!(),
-        }
+        self.char_indices()
+            .map(|(idx, _)| idx)
+            // find the character overlapping the point
+            // i.e. the first character that is further right than the point
+            .find(|&idx| point <= measure(&self[..self.next_char(idx)]))
+            // // round to the closer boundary
+            // .map(|idx| {
+            //     let next_idx = self.next_char(idx);
+            //     point > measure(&self[idx..next_idx])
+            // })
+            .unwrap_or(self.len())
     }
 
     #[inline]
